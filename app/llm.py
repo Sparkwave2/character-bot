@@ -60,8 +60,11 @@ class LlamaServer:
             args += ["--mmproj", c["mmproj_path"]]
         if c.get("threads"):
             args += ["-t", str(c["threads"])]
-        if c.get("flash_attn"):
-            args += ["-fa", "on"]
+        kv = (c.get("kv_cache") or "f16").strip().lower()
+        if c.get("flash_attn") or kv not in ("f16", ""):
+            args += ["-fa", "on"]          # a quantized V cache only works with flash attention
+        if kv in ("q8_0", "q4_0", "q5_0", "q5_1", "q4_1", "bf16"):
+            args += ["-ctk", kv, "-ctv", kv]
         if c.get("extra_args"):
             args += shlex.split(c["extra_args"], posix=(os.name != "nt"))
         return args

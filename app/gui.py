@@ -265,6 +265,7 @@ class App(ctk.CTk):
         ]
         c = self.card(s, 4, "Runtime")
         specs = [("ctx_size", "Context size", "int", "Tokens; history scrolls to fit"),
+                 ("kv_cache", "Context memory type", "str", "q8_0 = half the VRAM of f16; q4_0 = a quarter"),
                  ("gpu_layers", "GPU layers", "int", "99 = everything on GPU"),
                  ("threads", "CPU threads", "int", "0 = auto"),
                  ("port", "Port", "int", ""),

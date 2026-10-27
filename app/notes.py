@@ -41,11 +41,15 @@ class Notebook:
             return f"{os.path.basename(p)}:\n{f.read()}"
 
     def write(self, args):
+        """mode: append (default), replace or delete."""
+        mode = str(args.get("mode") or ("replace" if args.get("append") is False else "append")).lower()
+        if mode.startswith("del"):
+            return self.delete(args)
         p = self._path(args.get("name"))
-        content = str(args.get("content", "")).strip()
+        content = str(args.get("text") or args.get("content") or "").strip()
         if not content:
             return "Nothing to write."
-        append = bool(args.get("append", True))
+        append = not mode.startswith("rep")
         if not os.path.isfile(p) and len(self.names()) >= MAX_NOTES:
             return f"You already have {MAX_NOTES} notes; add to or delete an existing one."
         old = ""
@@ -55,7 +59,7 @@ class Notebook:
         text = old + content + "\n"
         if len(text) > MAX_NOTE_CHARS:
             return (f"That would make {os.path.basename(p)} too long ({len(text)} of {MAX_NOTE_CHARS} "
-                    "characters). Rewrite it shorter with append=false.")
+                    "characters). Rewrite it shorter with mode=replace.")
         os.makedirs(self.dir, exist_ok=True)
         with open(p, "w", encoding="utf-8") as f:
             f.write(text)

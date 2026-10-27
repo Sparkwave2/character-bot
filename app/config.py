@@ -20,10 +20,11 @@ DEFAULTS = {
         "mmproj_path": "",          # matching mmproj GGUF (vision projector)
         "host": "127.0.0.1",
         "port": 8089,
-        "ctx_size": 8192,
+        "ctx_size": 32768,
+        "kv_cache": "q8_0",         # f16 | q8_0 | q4_0: q8_0 halves the context's VRAM at no visible quality cost
         "gpu_layers": 99,
         "threads": 0,               # 0 = llama.cpp default
-        "flash_attn": True,
+        "flash_attn": True,         # needed for a quantized KV cache
         "extra_args": "",
         "autoload": False,
         "temperature": 0.8,

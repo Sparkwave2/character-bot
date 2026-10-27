@@ -37,9 +37,6 @@ CLAIMS = [
         _ACT % r"searches|googles|looks (?:it|that|this) up|browses|types" +
         r"|\b(?:let me|lemme|i'?ll|i'?m gonna|gonna)\s+(?:search|google|look\s+(?:it|that|this)\s+up|check\s+online)\b"
         r"|\bi\s+(?:just\s+)?(?:searched|googled|looked\s+(?:it|that|this)\s+up)\b", re.I)),
-    ("get_current_time", {"get_current_time"}, re.compile(
-        _ACT % r"checks? (?:the time|the clock|(?:his|her|their|my) (?:phone|watch))" +
-        r"|\b(?:let me|lemme)\s+check\s+the\s+(?:time|clock|date)\b", re.I)),
     ("draw_image", {"draw_image"}, re.compile(
         _ACT % r"draws|sketches|doodles|paints|scribbles (?:a|an|something)" +
         r"|\bhere'?s\s+(?:my|the|a)\s+(?:drawing|sketch|doodle|painting)\b"
@@ -75,11 +72,9 @@ def describe_action(name, args):
     """How a command shows up afterwards in the character's own memory (None = not recorded)."""
     a = lambda k: str(args.get(k, "")).strip()[:80]
     return {
-        "write_note": lambda: f'wrote in their note "{a("name")}"',
-        "delete_note": lambda: f'deleted their note "{a("name")}"',
+        "write_note": lambda: (f'deleted their note "{a("name")}"' if a("mode").lower().startswith("del")
+                               else f'wrote in their note "{a("name")}"'),
         "read_note": lambda: f'read their note "{a("name")}"',
-        "list_notes": lambda: "looked through their notes",
-        "get_current_time": lambda: "checked the time",
         "web_search": lambda: f'searched the web for "{a("query")}"',
         "read_webpage": lambda: f"read the web page {a('url')}",
         "view_profile_picture": lambda: f"looked at {a('name')}'s profile picture",
@@ -89,14 +84,13 @@ def describe_action(name, args):
 
 
 JUST_REPLY = {"type": "function", "function": {
-    "name": "just_reply",
-    "description": "Use no command right now and go straight to writing your reply.",
-    "parameters": {"type": "object", "properties": {}, "required": []}}}
+    "name": "just_reply", "description": "No command now; write your reply.",
+    "parameters": {"type": "object", "properties": {}}}}
 DECIDE = ("[system] Before you write your reply, decide whether one of your commands fits right now, "
           "for example {examples}. Call the ones you want (several are fine), or call just_reply if none "
           "fit. You write your message right after this.")
 EXAMPLES = [("add_reaction", "reacting to a message"), ("write_note", "writing down something worth remembering"),
-            ("read_note", "checking your notes"), ("get_current_time", "checking the time"),
+            ("read_note", "checking your notes"),
             ("web_search", "looking something up"), ("draw_image", "drawing what was asked for"),
             ("post_gif", "posting a GIF"), ("leave_channel", "leaving when you're told to go")]
 _decide_broken = False

@@ -6,109 +6,41 @@ plain text instead, the same <tool_call>{json}</tool_call> blocks are parsed."""
 import json
 import re
 
-TOOLS = [
-    {"type": "function", "function": {
-        "name": "add_reaction",
-        "description": "React to a message with an emoji. Use the message number shown as [#N].",
-        "parameters": {"type": "object", "properties": {
-            "message_ref": {"type": "integer", "description": "The N from [#N]"},
-            "emoji": {"type": "string", "description": "A unicode emoji, e.g. 😂 (several, e.g. 😂🔥, add one "
-                                                       "reaction each)"}},
-            "required": ["message_ref", "emoji"]}}},
-    {"type": "function", "function": {
-        "name": "leave_channel",
-        "description": "Leave the current channel. Put any goodbye in your normal reply text.",
-        "parameters": {"type": "object", "properties": {
-            "reason": {"type": "string"}}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "stay_silent",
-        "description": "Rarely needed. Only when the latest message is clearly between other people and "
-                       "has nothing to do with you. Never use it when someone talks to you or mentions you.",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "get_current_time",
-        "description": "Check the current date and time.",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "list_notes",
-        "description": "List the notes in your personal notebook.",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "read_note",
-        "description": "Read one of your notes.",
-        "parameters": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "Note name, e.g. people.md"}},
-            "required": ["name"]}}},
-    {"type": "function", "function": {
-        "name": "write_note",
-        "description": "Write something down in your personal notebook (Markdown) so you remember it later, "
-                       "e.g. facts about people, plans or promises. Only you can read your notes.",
-        "parameters": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "Note name, e.g. people.md"},
-            "content": {"type": "string", "description": "Markdown text to write"},
-            "append": {"type": "boolean", "description": "true = add to the end (default), "
-                                                          "false = replace the whole note"}},
-            "required": ["name", "content"]}}},
-    {"type": "function", "function": {
-        "name": "delete_note",
-        "description": "Delete one of your notes.",
-        "parameters": {"type": "object", "properties": {
-            "name": {"type": "string"}}, "required": ["name"]}}},
+def _tool(tool_name, description, optional=(), **params):
+    """A tool schema. Every definition is sent with every prompt, so the wording is kept short;
+    `params` maps argument -> (json type, description or None)."""
+    props = {k: {"type": t, **({"description": d} if d else {})} for k, (t, d) in params.items()}
+    schema = {"type": "object", "properties": props}
+    required = [k for k in params if k not in optional]
+    if required:
+        schema["required"] = required
+    return {"type": "function", "function": {"name": tool_name, "description": description, "parameters": schema}}
+
+
+ALL_TOOLS = [
+    _tool("add_reaction", "React to message #N with an emoji (several emojis = several reactions).",
+          message_ref=("integer", "N from [#N]"), emoji=("string", None)),
+    _tool("leave_channel", "Leave the channel (say goodbye in your reply).", optional=("reason",),
+          reason=("string", None)),
+    _tool("stay_silent", "Don't reply. Only when the message is between others and not about you.",),
+    _tool("read_note", "Read one of your notes.", name=("string", None)),
+    _tool("write_note", "Save something to remember (facts about people, plans, promises) in your notebook.",
+          optional=("mode",), name=("string", "e.g. people.md"), text=("string", None),
+          mode=("string", "append (default), replace or delete")),
+    _tool("view_profile_picture", "See someone's profile picture, only if asked or it matters.",
+          name=("string", "display name")),
+    _tool("web_search", "Search the web for facts or news.", query=("string", None)),
+    _tool("read_webpage", "Read a web page (or see an image link).", url=("string", None)),
+    _tool("draw_image", "Draw a picture and post it; you'll see it.",
+          prompt=("string", "English description: subject, look, setting, style")),
+    _tool("post_gif", "Post a GIF matching a search.", query=("string", "e.g. happy dance")),
 ]
-
-PFP_TOOL = {"type": "function", "function": {
-    "name": "view_profile_picture",
-    "description": "Look at a person's Discord profile picture. Only when someone asks you to, or their "
-                   "picture actually matters to the conversation. You will see it before replying.",
-    "parameters": {"type": "object", "properties": {
-        "name": {"type": "string", "description": "Their display name"}},
-        "required": ["name"]}}}
-
-
-WEB_TOOLS = [
-    {"type": "function", "function": {
-        "name": "web_search",
-        "description": "Search the internet (DuckDuckGo) for current or factual information you don't know. "
-                       "Returns titles, links and short snippets.",
-        "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "What to search for"}},
-            "required": ["query"]}}},
-    {"type": "function", "function": {
-        "name": "read_webpage",
-        "description": "Read the whole text of a web page, e.g. a link from search results or one someone posted "
-                       "(posted links only come with a short description). Image links show you the picture.",
-        "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "Full http(s) link"}},
-            "required": ["url"]}}},
-]
-
-
-DRAW_TOOL = {"type": "function", "function": {
-    "name": "draw_image",
-    "description": "Draw a picture and post it in the chat, e.g. when someone asks you to draw something or "
-                   "you want to show what something looks like. You will see the result. Takes a little while.",
-    "parameters": {"type": "object", "properties": {
-        "prompt": {"type": "string", "description": "What the picture shows, in English, as a detailed "
-                                                    "comma-separated description: subject, appearance, pose, "
-                                                    "setting, style, lighting"}},
-        "required": ["prompt"]}}}
-
-
-GIF_TOOL = {"type": "function", "function": {
-    "name": "post_gif",
-    "description": "Search for a GIF (KLIPY) and post the best match in the chat, e.g. a reaction GIF.",
-    "parameters": {"type": "object", "properties": {
-        "query": {"type": "string", "description": "A few words, e.g. 'happy dance' or 'facepalm'"}},
-        "required": ["query"]}}}
-
-ALL_TOOLS = TOOLS + [PFP_TOOL] + WEB_TOOLS + [DRAW_TOOL, GIF_TOOL]
 TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 # what each switch on the Behavior page says, and whether it is on by default
 TOOL_LABELS = {
     "add_reaction": ("React with emojis", True), "leave_channel": ("Leave on their own", True),
-    "stay_silent": ("Stay silent", True), "get_current_time": ("Check the time", True),
-    "list_notes": ("List notes", True), "read_note": ("Read notes", True),
-    "write_note": ("Write notes", True), "delete_note": ("Delete notes", True),
+    "stay_silent": ("Stay silent", True), "read_note": ("Read notes", True),
+    "write_note": ("Write and delete notes", True),
     "view_profile_picture": ("View profile pictures", True), "web_search": ("Search the web", True),
     "read_webpage": ("Read web pages", True), "draw_image": ("Draw pictures (Drawing page)", False),
     "post_gif": ("Post GIFs (needs a KLIPY key)", True),

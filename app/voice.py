@@ -16,6 +16,7 @@ from discord.ext.voice_recv.rtp import OPUS_SILENCE
 
 from .agent import run_turn
 from .log import log
+from .bot import now_note
 from .tools import tools_tokens
 from .tts import TTSError, speakable
 
@@ -24,12 +25,8 @@ MIN_SPEECH = 0.4                   # seconds; shorter bursts are coughs and clic
 MAX_SPEECH = 30                    # seconds; longer speech is cut and transcribed in parts
 
 VOICE_RULES = """
-You are now talking in the voice channel "{channel}". People speak to you out loud and their speech is
-transcribed for you, so it can contain recognition mistakes. Everything you write is spoken aloud by a
-text-to-speech voice:
-- answer the way you would talk, usually one to three short sentences;
-- never use emojis, markdown, lists, links or *actions*;
-- you can't react to messages here. Use leave_channel to leave the voice channel."""
+You're now in voice channel "{channel}". What people say is transcribed (may contain mistakes) and your reply
+is spoken aloud: talk naturally in 1-3 short sentences, with no emojis, markdown, links or *actions*."""
 
 
 def _patch_reader_for_dave():
@@ -186,6 +183,7 @@ class VoiceSession:
         async with self.bot.gen_lock:
             msgs = self.core.memory.build_messages(self.char.name, system, self.channel.id, budget,
                                                    int(b["image_token_cost"]), int(b["max_images_in_context"]))
+            msgs.append(now_note())
             log(f"[voice] {self.char.name} is thinking in {self.channel_label}")
             llm.peak_tokens = 0
             res = await run_turn(llm, msgs, tools, self.char.name,

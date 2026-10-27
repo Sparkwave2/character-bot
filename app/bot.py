@@ -20,42 +20,38 @@ from .notes import Notebook, current_time
 from .tools import THINK_RE, tool_list, tool_text_instructions, tools_tokens
 from .web import fetch_link, links_in, preview, read_webpage, remove_link, web_search
 
-SYSTEM_RULES = """You are roleplaying as {name} in a Discord server, chatting alongside real people and possibly other AI characters.
+# Sent with every prompt, so every sentence here costs context: keep it short.
+SYSTEM_RULES = """You are {name}, chatting in a Discord server with real people and maybe other AI characters.
 
 {prompt}
 
-How the chat works:
-- Each message is shown as "[#N] Name: text". N is the message number. Messages from other AI characters are marked "(character)".
-- Messages from a different channel than the current one are marked "in #channel". You remember them, but you are now speaking in #{channel}.
-- You only see people's display names{pfp}. You can see images people post.
-- Emoji reactions are shown as events. You never reply to a reaction itself, but you may react to messages yourself.
-{commands}{notebook}- Write only {name}'s next message: no "[#N]" prefix, no name prefix, never speak for other people or characters.
-- Keep it natural and conversational for Discord; usually 1-3 short paragraphs at most.
+Chat format: messages look like "[#N] Name: text"; other AI characters are marked "(character)", messages from other channels "in #channel". You see display names{pfp} and posted images. Reactions show up as events; never reply to one.
+{commands}{notebook}Write only {name}'s next message: no "[#N]" or name prefix, never speak for others. Keep it natural, usually 1-3 short paragraphs.
 
-Current channel: #{channel} in the server "{guild}". Characters present here: {present}.
+You are in #{channel} on "{guild}". Characters here: {present}.
 {tool_text}"""
 
 
-COMMAND_LINES = """- Normally you reply with a message, and you can use commands ({kinds}) alongside it. Use them freely whenever they fit, as a real person would: {hints}. A command never replaces your reply.
-- Only a command makes something happen. Writing "*reacts with 😂*", "I'll write that down" or "let me look it up" without using the command does nothing, so never claim you did something you didn't use a command for.
+COMMAND_LINES = """Alongside your reply you can use commands; use them freely when they fit: {hints}. Only commands make things happen: writing "*reacts*" or "I'll note that" without the command does nothing, so never claim it.
 """
-NOTEBOOK_LINE = """- You have a personal notebook of Markdown notes that lasts forever, even after old chat history is forgotten. {write}{notes}
+NOTEBOOK_LINE = """Your notebook lasts forever, even after chat history is forgotten.{write} {notes}
 """
-# (command, what it's called in the list, when to use it)
+# (command, when to use it)
 COMMAND_HINTS = [
-    ("add_reaction", "reacting", "react to messages that deserve it"),
-    ("write_note", "notes", None), ("read_note", "notes", None), ("list_notes", "notes", None),
-    ("get_current_time", "checking the time", "check the time instead of guessing it"),
-    ("web_search", "searching the web",
-     "search the web for news, facts or anything you're unsure about instead of making it up"),
-    ("draw_image", "drawing", "draw a picture when someone asks for one or when showing beats telling"),
-    ("post_gif", "posting GIFs", "post a GIF now and then when it fits the mood"),
-    ("leave_channel", "leaving", "use leave_channel when you decide to leave or are told to go and agree"),
-    ("stay_silent", "staying silent", None),
+    ("add_reaction", "react to messages that deserve it"),
+    ("web_search", "search instead of guessing facts"),
+    ("draw_image", "draw when asked"),
+    ("post_gif", "post a GIF now and then"),
+    ("leave_channel", "leave_channel when you're told to go and agree"),
 ]
 
 TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|context|join|leave)\b[ \t]*([^\n]*)",
                           re.I)
+
+
+def now_note():
+    """The time goes last, not in the system prompt, so llama-server can reuse its cached prompt."""
+    return {"role": "user", "content": f"[system] {current_time()}"}
 
 
 def meter_bar(used, size, width=16):
@@ -885,25 +881,17 @@ class CharacterBot(discord.Client):
         tools = self.tools_for() if tools is None else tools
         names = {t["function"]["name"] for t in tools}
         native = self.cfg["llm"].get("use_native_tools", True)
-        kinds, hints = [], []
-        for cmd, kind, hint in COMMAND_HINTS:
-            if cmd in names:
-                if kind not in kinds:
-                    kinds.append(kind)
-                if hint:
-                    hints.append(hint)
-        commands = COMMAND_LINES.format(kinds=", ".join(kinds), hints=", ".join(hints) or "whenever useful") \
-            if names else ""
+        hints = [h for cmd, h in COMMAND_HINTS if cmd in names]
+        commands = COMMAND_LINES.format(hints=", ".join(hints) or "whenever useful") if names else ""
         notebook = ""
-        if names & {"list_notes", "read_note", "write_note"}:
-            write = "Write down things worth remembering (names, facts people tell you about themselves, " \
-                    "promises, plans) as soon as you learn them. " if "write_note" in names else ""
+        if names & {"read_note", "write_note"}:
+            write = " Write down what's worth remembering as soon as you learn it." if "write_note" in names else ""
             notebook = NOTEBOOK_LINE.format(write=write, notes=Notebook(char.key).list())
         return SYSTEM_RULES.format(
             name=char.name, prompt=char.prompt.strip(), channel=channel.name, guild=channel.guild.name,
             present=", ".join(present or [i["name"] for i in self.present(channel.id).values()]),
             commands=commands, notebook=notebook,
-            pfp=" (and profile pictures, if you ask to view one)" if "view_profile_picture" in names else "",
+            pfp=" (and profile pictures, via the command)" if "view_profile_picture" in names else "",
             tool_text="" if native or not tools else "\n" + tool_text_instructions(tools))
 
     async def respond(self, channel, speaker):
@@ -923,6 +911,7 @@ class CharacterBot(discord.Client):
         budget -= tools_tokens(tools)
         msgs = self.core.memory.build_messages(char.name, system, channel.id, budget,
                                                int(b["image_token_cost"]), int(b["max_images_in_context"]))
+        msgs.append(now_note())
         log(f"[discord] {char.name} is thinking in #{channel.name} ({len(msgs) - 1} context entries)")
 
         typing = asyncio.create_task(self._typing(channel)) if b.get("typing_indicator") else None
@@ -1050,8 +1039,7 @@ class CharacterBot(discord.Client):
             log(f"[web] {char.name} read {str(args.get('url'))[:100]}")
             return await read_webpage(self.http_session, args.get("url"))
 
-        return {"get_current_time": current_time, "list_notes": nb.list, "read_note": nb.read,
-                "write_note": logged(nb.write, "wrote"), "delete_note": logged(nb.delete, "deleted"),
+        return {"read_note": nb.read, "write_note": logged(nb.write, "wrote"),
                 "web_search": search, "read_webpage": read_page,
                 **({"draw_image": draw, "post_gif": gif} if channel and info else {})}
 
