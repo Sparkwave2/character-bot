@@ -804,7 +804,9 @@ class App(ctk.CTk):
                  ("stt_language", "Language", "str", "e.g. en; empty = detect automatically"),
                  ("stt_model_dir", "Model folder", "str", "Empty = models/whisper in the app folder"),
                  ("silence_seconds", "Pause that ends speech (s)", "float",
-                  "How long someone is quiet before the character answers")]
+                  "How long someone is quiet before the character answers"),
+                 ("interruptible", "Characters stop when talked over", "bool",
+                  "They drop the rest of what they were saying and answer the new message instead")]
         self.voice_fields += [Field(c, self.cfg, "voice", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
         self.button(s, "Save", lambda: self.save_fields(self.voice_fields), width=110).grid(
             row=5, column=0, sticky="w", padx=32, pady=20)

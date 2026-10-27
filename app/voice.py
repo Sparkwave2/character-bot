@@ -23,6 +23,8 @@ from .tts import TTSError, speakable
 BYTES_PER_SEC = 48000 * 2 * 2      # Discord PCM: 48 kHz, 16-bit, stereo
 MIN_SPEECH = 0.4                   # seconds; shorter bursts are coughs and clicks
 MAX_SPEECH = 30                    # seconds; longer speech is cut and transcribed in parts
+TALK_OVER = 0.4                    # seconds of someone talking over the character before it stops
+CHARS_PER_SEC = 14                 # rough speaking rate, to guess how much of a reply was said
 
 VOICE_RULES = """
 You're now in voice channel "{channel}". What people say is transcribed (may contain mistakes) and your reply
@@ -68,10 +70,12 @@ class StreamSource(discord.AudioSource):
         self.lock = threading.Lock()
         self.finished = False
         self.started = False
+        self.added = self.played = 0    # bytes
 
     def add(self, pcm):
         with self.lock:
             self.buf += pcm
+            self.added += len(pcm)
 
     def finish(self):
         self.finished = True
@@ -80,6 +84,7 @@ class StreamSource(discord.AudioSource):
         with self.lock:
             if len(self.buf) >= self.FRAME or (self.finished and self.buf):
                 out = bytes(self.buf[:self.FRAME]).ljust(self.FRAME, b"\0")
+                self.played += min(len(self.buf), self.FRAME)
                 del self.buf[:self.FRAME]
                 return out
         return b"" if self.finished else b"\0" * self.FRAME
@@ -135,6 +140,9 @@ class VoiceSession:
         self.busy = False               # generating or speaking
         self.again = False              # someone spoke meanwhile; reply once more afterwards
         self.timing = None              # how long hearing the last utterance took, for the log
+        self.source = None              # what the character is saying right now (StreamSource)
+        self.said = None                # (memory entry, spoken text) of that reply
+        self.cut = False                # the reply was interrupted; stop making the rest of it
         self.closed = False
         self.watch_task = asyncio.create_task(self._watch())
         vc.listen(Listener(self))
@@ -160,6 +168,29 @@ class VoiceSession:
                 b = self.buffers[user.id] = [bytearray(), now, user]
             b[0] += pcm
             b[1] = now
+            talking_over = len(b[0]) >= TALK_OVER * BYTES_PER_SEC
+        if talking_over and self.source and not self.cut and self.settings.get("interruptible", True):
+            self.cut = True
+            self.loop.call_soon_threadsafe(self._interrupt, user)
+
+    # ---- being interrupted ---------------------------------------------------
+    def _interrupt(self, user):
+        """Someone talks over the character: it stops at once (the rest of the reply is dropped) and
+        answers what they say once it's transcribed. Only the part it really said stays in its memory."""
+        src, said = self.source, self.said
+        if not src:
+            return
+        if said:
+            entry, text = said
+            total = src.added if src.finished else max(src.added, len(text) / CHARS_PER_SEC * BYTES_PER_SEC)
+            keep = int(len(text) * min(1.0, src.played / max(total, 1)))
+            spoken = text[:keep].rsplit(" ", 1)[0] if 0 < keep < len(text) else text[:keep]
+            if keep < len(text):
+                entry.text = spoken + "— [interrupted]"
+                self.core.memory.dirty = True
+            log(f"[voice] {getattr(user, 'display_name', user)} interrupted {self.char.name} after: "
+                f"{spoken or '(nothing)'}")
+        self.vc.stop()
 
     async def _watch(self):
         """Discord stops sending packets when someone stops talking; a gap ends the utterance."""
@@ -238,13 +269,20 @@ class VoiceSession:
             timing["model"], timing["work"] = time.monotonic() - t, dict(llm.work)
         self.bot._remember_actions(self.char, self.channel.id, self.channel_label, res)
         text = "" if res.silent else speakable(res.text)
+        if text and self.again and self.settings.get("interruptible", True):
+            log(f"[voice] {self.char.name} drops its answer: someone said something new while it was thinking")
+            return
         if text and not self.closed:
             mem = self.core.memory
-            mem.add(self.char.name, mem.new_entry(channel_id=self.channel.id, channel_name=self.channel_label,
-                                                  author=self.char.name, char_name=self.char.name,
-                                                  text=res.text, ts=time.time()))
+            entry = mem.new_entry(channel_id=self.channel.id, channel_name=self.channel_label,
+                                  author=self.char.name, char_name=self.char.name, text=res.text, ts=time.time())
+            mem.add(self.char.name, entry)
             log(f"[voice] {self.char.name}: {text}")
-            await self.say(text, timing)
+            self.said = (entry, text)
+            try:
+                await self.say(text, timing)
+            finally:
+                self.said = None
         if res.leave:
             await self.bot.leave_voice(self.channel.guild, f"{self.char.name} decided to leave {self.channel_label}.",
                                        f"👋 **{self.char.name}** left voice chat.")
@@ -263,9 +301,10 @@ class VoiceSession:
         """Plays the reply while it is still being turned into speech."""
         source, done, t = StreamSource(), asyncio.Event(), time.monotonic()
         speech, engine = self._speech(text)
+        self.cut = False
         try:
             async for pcm in speech:
-                if self.closed or not self.vc.is_connected():
+                if self.closed or self.cut or not self.vc.is_connected():
                     break
                 source.add(pcm)
                 if not source.started:
@@ -275,13 +314,17 @@ class VoiceSession:
                         log_timing(self.char.name, timing, engine)
                     if self.vc.is_playing():
                         self.vc.stop()
+                    self.source = source
                     self.vc.play(source, after=lambda e: self.loop.call_soon_threadsafe(done.set))
         except (TTSError, OSError, asyncio.TimeoutError, aiohttp.ClientError) as e:
             log(f"[voice] {self.char.name} can't speak: {e}", level="warn")
         finally:
             source.finish()
-        if source.started:
-            await done.wait()
+        try:
+            if source.started:
+                await done.wait()
+        finally:
+            self.source = None
 
     async def close(self):
         self.closed = True

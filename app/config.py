@@ -68,6 +68,7 @@ DEFAULTS = {
         "stt_language": "",         # e.g. "en"; empty = detect
         "stt_model_dir": "",        # empty = ./models/whisper
         "silence_seconds": 0.8,     # a pause this long ends what someone is saying
+        "interruptible": True,      # talking over a character stops it, and it answers the new message instead
     },
     "tools": {name: on for name, (_label, on) in TOOL_LABELS.items()},   # each command on/off
     "gifs": {
