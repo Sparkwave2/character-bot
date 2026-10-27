@@ -46,6 +46,8 @@ CLAIMS = [
         r"|\b(?:let me|lemme|i'?ll|i'?m gonna|gonna)\s+(?:draw|sketch|doodle|paint)\b", re.I)),
     ("post_gif", {"post_gif"}, re.compile(
         _ACT % r"posts? (?:a )?gif|sends? (?:a )?gif" + r"|\[gif[^\]]*\]", re.I)),
+    ("transform", {"transform"}, re.compile(
+        _ACT % r"transforms?|shape-?shifts?|morphs?|changes? (?:into|form|back)|turns? into", re.I)),
     ("leave_channel", {"leave_channel"}, re.compile(
         _ACT % r"leaves|walks (?:out|away|off)|storms (?:off|out)|heads out|exits|disappears|vanishes", re.I)),
 ]
@@ -56,6 +58,7 @@ class TurnResult:
     text: str = ""
     silent: bool = False
     leave: bool = False
+    transform: str = ""                           # the form it turns into after this message
     actions: list = field(default_factory=list)   # [(name, args)] in call order
 
 
@@ -98,7 +101,7 @@ EXAMPLES = [("add_reaction", "reacting to a message"), ("write_note", "writing d
             ("read_note", "checking your notes"), ("get_current_time", "checking the time"),
             ("web_search", "looking something up"), ("draw_image", "drawing what was asked for"),
             ("post_gif", "posting a GIF"), ("create_file", "making a file someone wants"),
-            ("leave_channel", "leaving when you're told to go")]
+            ("transform", "transforming into another form"), ("leave_channel", "leaving when you're told to go")]
 _decide_broken = False
 
 
@@ -194,6 +197,15 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
                 res.leave = True
                 results.append("You will leave the channel right after this. "
                                "Write your goodbye message now if you want to say one.")
+            elif name == "transform":
+                forms = _forms(tools)
+                into = next((f for f in forms if f.lower() == str(args.get("into", "")).strip().lower()), None)
+                if into:
+                    res.transform = into
+                    results.append(f"You will transform into {into} right after this message, and {into} "
+                                   "speaks next. Write what happens before the change, if anything.")
+                else:
+                    results.append(f"You can only transform into: {', '.join(forms) or 'nothing'}.")
             elif name in handlers:
                 try:
                     out = handlers[name](args)
@@ -207,8 +219,8 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
             else:
                 results.append(f"Unknown command {name}.")
 
-        if res.leave and texts:
-            break  # goodbye already written
+        if (res.leave or res.transform) and texts:
+            break  # goodbye (or the lead-up to the change) already written
         # nothing left to say after a reaction is fine; ask once for the actual reply
         _append_results(msgs, reply, calls, results)
         if images:
@@ -219,6 +231,14 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
     if not res.text and not res.silent:
         res.text = fallback   # the retry wrote nothing; keep what it said first
     return res
+
+
+def _forms(tools):
+    """The form names the transform command offers (they're its argument's choices)."""
+    for t in tools:
+        if t["function"]["name"] == "transform":
+            return t["function"]["parameters"]["properties"]["into"].get("enum", [])
+    return []
 
 
 async def _react_each(args, reacted, on_react):

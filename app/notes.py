@@ -18,16 +18,25 @@ def note_filename(name):
 
 
 class Notebook:
-    def __init__(self, char_key):
+    def __init__(self, char_key, shared=()):
+        """`shared` are the folder keys of the character's other forms: their notes are its notes too.
+        New notes go into its own folder; an existing note is changed where it is."""
         self.dir = os.path.join(NOTES_DIR, char_key)
+        self.dirs = [self.dir] + [os.path.join(NOTES_DIR, k) for k in shared if k != char_key]
 
     def _path(self, name):
-        return os.path.join(self.dir, note_filename(name))
+        fn = note_filename(name)
+        for d in self.dirs:
+            if os.path.isfile(os.path.join(d, fn)):
+                return os.path.join(d, fn)
+        return os.path.join(self.dir, fn)
 
     def names(self):
-        if not os.path.isdir(self.dir):
-            return []
-        return sorted(f for f in os.listdir(self.dir) if f.lower().endswith(".md"))
+        found = set()
+        for d in self.dirs:
+            if os.path.isdir(d):
+                found |= {f for f in os.listdir(d) if f.lower().endswith(".md")}
+        return sorted(found)
 
     def list(self, _args=None):
         names = self.names()

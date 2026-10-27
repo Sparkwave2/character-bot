@@ -37,6 +37,8 @@ ALL_TOOLS = [
     _tool("post_gif", "Post a GIF matching a search.", query=("string", "e.g. happy dance")),
     _tool("create_file", "Make a file (code, story, list, data...) and post it in the chat. You write its contents "
           "right after, in full.", filename=("string", None), about=("string", "what goes in it")),
+    _tool("transform", "Transform into another of your forms (you keep your memories); that form speaks next.",
+          into=("string", "the form's name")),
 ]
 TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 # what each switch on the Behavior page says, and whether it is on by default
@@ -49,6 +51,7 @@ TOOL_LABELS = {
     "read_webpage": ("Read web pages", True), "draw_image": ("Draw pictures (Drawing page)", False),
     "post_gif": ("Post GIFs (needs a KLIPY key)", True),
     "create_file": ("Create files (types below)", True),
+    "transform": ("Transform into linked forms (Characters page)", True),
 }
 
 

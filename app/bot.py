@@ -434,6 +434,11 @@ class CharacterBot(ChatLogic, discord.Client):
             return await interaction.response.send_message(f"No character named **{name}**.", ephemeral=True)
         if char.name.lower() in self.present(ch.id):
             return await interaction.response.send_message(f"**{char.name}** is already here.", ephemeral=True)
+        other = self.form_here(ch.id, char)
+        if other:
+            return await interaction.response.send_message(
+                f"**{char.name}** is already here as **{other}** (they're forms of the same character).",
+                ephemeral=True)
         if not ch.permissions_for(ch.guild.me).manage_webhooks:
             return await interaction.response.send_message("I need the **Manage Webhooks** permission here.", ephemeral=True)
         await interaction.response.defer(thinking=True)
@@ -452,10 +457,34 @@ class CharacterBot(ChatLogic, discord.Client):
         log(f"[discord] {char.name} summoned into #{ch.name}")
         self.schedule(ch, force=char.name)
 
+    @staticmethod
+    def _webhook_name(char):
+        return re.sub(r"(?i)discord|clyde", "_", char.name)[:80] or "Character"   # names Discord refuses
+
     async def _create_webhook(self, channel, char):
-        avatar = char.avatar_bytes()
-        name = re.sub(r"(?i)discord|clyde", "_", char.name)[:80] or "Character"
-        return await channel.create_webhook(name=name, avatar=avatar, reason="Character summoned")
+        return await channel.create_webhook(name=self._webhook_name(char), avatar=char.avatar_bytes(),
+                                            reason="Character summoned")
+
+    async def swap_form(self, channel, old, new):
+        """Transforming: the same webhook takes the new form's name and picture (a new one if it's gone)."""
+        here = self.present(channel.id)
+        info = here.pop(old.name.lower(), None)
+        if not info:
+            return False
+        try:
+            wh = await self.fetch_webhook(info["webhook_id"])
+            wh = await wh.edit(name=self._webhook_name(new), avatar=new.avatar_bytes(),
+                               reason="Character transformed") or wh
+        except discord.HTTPException:
+            try:
+                wh = await self._create_webhook(channel, new)
+            except discord.HTTPException as e:
+                log(f"[discord] {old.name} couldn't transform: {e}", level="warn")
+                here[old.name.lower()] = info
+                return False
+        here[new.name.lower()] = {"name": new.name, "webhook_id": wh.id, "webhook_url": wh.url}
+        self._save()
+        return True
 
     async def cmd_dismiss(self, interaction, name):
         here = self.present(interaction.channel_id)

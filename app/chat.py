@@ -47,6 +47,7 @@ COMMAND_HINTS = [
     ("draw_image", "draw when asked"),
     ("post_gif", "post a GIF now and then"),
     ("create_file", "make a file when someone wants one"),
+    ("transform", "transform into another form when the moment calls for it"),
     ("leave_channel", "leave_channel when you're told to go and agree"),
 ]
 FILE_PROMPT = ("[system] Now write the file {name} ({about}). Your answer is saved as the file exactly as you "
@@ -76,6 +77,13 @@ def safe_filename(name):
     base = re.sub(r"[^\w\-. ]+", "", base).strip(" .").replace(" ", "_")[:60] or "file"
     ext = re.sub(r"[^\w]+", "", ext).lower()
     return (f"{base}.{ext}" if ext else base), ext
+
+
+def _with_param(tool, prop, schema):
+    """A copy of `tool` with one argument's schema replaced (the shared definition stays as it is)."""
+    params = dict(tool["function"]["parameters"])
+    params["properties"] = {**params["properties"], prop: schema}
+    return {**tool, "function": {**tool["function"], "parameters": params}}
 
 
 def allowed_extensions(cfg):
@@ -295,18 +303,26 @@ class ChatLogic:
             return bool(allowed_extensions(self.cfg))
         return True
 
-    def tools_for(self, voice=False):
+    def tools_for(self, voice=False, char=None):
+        """`char`'s commands; transform is only there for a character with forms (and lists them)."""
         # in voice chat nothing can be shown, so reactions, pictures, GIFs and files are left out
         tools = tool_list(self.tool_on, exclude=tuple(self.excluded_tools) + (VOICE_EXCLUDED if voice else ()))
-        for i, t in enumerate(tools):
-            if t["function"]["name"] == "create_file":   # the switchable list of file types goes in the schema
-                t = {**t, "function": {**t["function"], "parameters": {**t["function"]["parameters"]}}}
-                props = dict(t["function"]["parameters"]["properties"])
-                props["filename"] = {"type": "string", "description": "with one of these endings: "
-                                     + ", ".join(allowed_extensions(self.cfg))}
-                t["function"]["parameters"]["properties"] = props
-                tools[i] = t
-        return tools
+        forms = [c for c in self.core.characters.forms_of(char)] if char else []
+        if voice:   # in voice chat a form needs a voice of its own
+            forms = [c for c in forms if getattr(self, "can_speak", lambda c: True)(c)]
+        forms = [c.name for c in forms]
+        out = []
+        for t in tools:
+            name = t["function"]["name"]
+            if name == "create_file":   # the switchable list of file types goes in the schema
+                t = _with_param(t, "filename", {"type": "string", "description": "with one of these endings: "
+                                                + ", ".join(allowed_extensions(self.cfg))})
+            elif name == "transform":
+                if not forms:
+                    continue
+                t = _with_param(t, "into", {"type": "string", "enum": forms})
+            out.append(t)
+        return out
 
     # ---- context meter -------------------------------------------------------
     def note_usage(self, char_name):
@@ -317,7 +333,7 @@ class ChatLogic:
     def context_estimate(self, channel, char):
         """Tokens the character's next prompt would take right now (estimate, nothing is trimmed)."""
         b, lc = self.behavior, self.cfg["llm"]
-        tools = self.tools_for()
+        tools = self.tools_for(char=char)
         system = self._system_prompt(channel, char, tools=tools)
         budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256 - tools_tokens(tools)
         msgs = self.core.memory.build_messages(char.name, system, channel.id, budget, int(b["image_token_cost"]),
@@ -325,7 +341,7 @@ class ChatLogic:
         return self.core.memory.count_tokens(msgs, int(b["image_token_cost"])) + tools_tokens(tools)
 
     def _system_prompt(self, channel, char, present=None, tools=None):
-        tools = self.tools_for() if tools is None else tools
+        tools = self.tools_for(char=char) if tools is None else tools
         names = {t["function"]["name"] for t in tools}
         native = self.cfg["llm"].get("use_native_tools", True)
         hints = [h for cmd, h in COMMAND_HINTS if cmd in names]
@@ -333,7 +349,7 @@ class ChatLogic:
         notebook = ""
         if names & {"read_note", "write_note"}:
             write = " Write down what's worth remembering as soon as you learn it." if "write_note" in names else ""
-            notebook = NOTEBOOK_LINE.format(write=write, notes=Notebook(char.key).list())
+            notebook = NOTEBOOK_LINE.format(write=write, notes=self.notebook(char).list())
         return SYSTEM_RULES.format(
             name=char.name, prompt=char.prompt.strip(), channel=channel.name, guild=channel.guild.name,
             present=", ".join(present or [i["name"] for i in self.present(channel.id).values()]),
@@ -353,7 +369,7 @@ class ChatLogic:
             return
         b, lc = self.behavior, self.cfg["llm"]
         budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256
-        tools = self.tools_for()
+        tools = self.tools_for(char=char)
         system = self._system_prompt(channel, char, tools=tools)
         budget -= tools_tokens(tools)
         msgs = self.core.memory.build_messages(char.name, system, channel.id, budget,
@@ -384,6 +400,8 @@ class ChatLogic:
         if res.leave:
             await self.remove_character(channel, char.name, f"{char.name} decided to leave #{channel.name}.")
             await self.announce(channel, f"👋 **{char.name}** left the channel.")
+        elif res.transform:
+            await self.transform(channel, char, res.transform)
         if self.core.memory.dirty:
             self.core.memory.save()
 
@@ -397,6 +415,30 @@ class ChatLogic:
                 mem.add(char.name, mem.new_entry(kind="event", channel_id=channel_id, channel_name=channel_name,
                                                  text=f"{char.name} {what}."))
 
+    def notebook(self, char):
+        """Linked forms are one being: they share their notes, like their memory."""
+        return Notebook(char.key, [c.key for c in self.core.characters.group_of(char)])
+
+    def form_here(self, channel_id, char):
+        """The name of another form of `char` that is already in the channel, or None."""
+        here = self.present(channel_id)
+        return next((c.name for c in self.core.characters.group_of(char)
+                     if c.name.lower() != char.name.lower() and c.name.lower() in here), None)
+
+    async def transform(self, channel, char, into):
+        """`char` becomes its form `into` right where it is; the new form speaks next."""
+        new = self.core.characters.get(into)
+        if not new or new.name.lower() in self.present(channel.id):
+            return
+        if not await self.swap_form(channel, char, new):
+            return
+        log(f"[{self.log_tag}] {char.name} transformed into {new.name} in #{channel.name}")
+        ev = self.core.memory.new_entry(kind="event", channel_id=channel.id, channel_name=channel.name,
+                                        text=f"{char.name} transformed into {new.name}.")
+        self._witness(channel.id, ev)
+        await self.announce(channel, f"✨ **{char.name}** transformed into **{new.name}**.")
+        self.schedule(channel, force=new.name)
+
     async def post_gif(self, channel, info, char, url, title):
         """Discord shows a .gif link as the GIF itself."""
         await self._send(channel, info, char, url)
@@ -405,7 +447,7 @@ class ChatLogic:
     def _local_tools(self, char, channel=None, info=None, msgs=None):
         """`channel`/`info` (where and as whom to post) are needed for commands that post something;
         `msgs` (the conversation so far) for create_file, which writes the file in a call of its own."""
-        nb = Notebook(char.key)
+        nb = self.notebook(char)
         drawn, made = [], []
 
         async def draw(args):

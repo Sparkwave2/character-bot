@@ -98,6 +98,11 @@ Each character is a JSON file in `characters/`:
 - `description` is optional. It's shown in `/characters` and in the autocomplete lists.
 - `voice` is an ElevenLabs voice ID, or the name of a voice in your ElevenLabs account. A character without a voice can't join voice chat, unless the local voice is on.
 - `local_voice` (optional) is a Kokoro voice such as `af_bella` or `jf_alpha`, used when the local voice is on.
+- `forms` (optional) lists characters this one can transform into, for example `["Luna (cursed)"]`. Set it on the Characters page with **Forms → Pick…**. Each form is a character of its own, with its own prompt, picture and voice.
+  - Links go both ways: saving one side updates the other character's file too.
+  - Linked forms are one being. They share one memory and their notes, and each sees the other forms' messages as its own. Forms linked in a chain (A–B, B–C) all share.
+  - Memories are merged when you link forms. If you unlink one later, each form keeps a copy.
+  - Only one form can be in a channel at a time; summoning another form is refused.
 
 You can create and edit characters in the **Characters** page, which copies the chosen picture next to the JSON. **Pick…** next to the voice field lists the voices in your ElevenLabs account, labelled by type. Free ElevenLabs plans can use Built-in and Designed voices (and your own clones) through the API, but not Voice Library voices; those are greyed out and marked "Library (paid plan)".
 
@@ -129,6 +134,8 @@ Characters can also act through MCP-style tool calls (OpenAI tool schemas, which
 | `draw_image(prompt)` | Draw a picture with Stable Diffusion and post it; the character sees the result (off by default, see Drawing) |
 | `post_gif(query)` | Post the best-matching GIF from KLIPY (needs a KLIPY key) |
 | `create_file(filename, about)` | Make a file and post it as an attachment: code, a story, a list, CSV data and so on. The character only names the file and says what goes in it; the contents are then written in a separate model call (up to **Longest file**, 4,000 tokens by default), so files can be much longer than a chat message. Only the endings listed under **Behavior → File types characters can create** are allowed, and the character is told which. A copy is kept in `files/<character>/`. This is separate from the notebook, which is the character's private memory |
+
+| `transform(into)` | Turn into one of the character's linked forms (see Characters), where it is. Only characters with forms get this command, and `into` can only be one of their forms. The message it was writing is posted first, then a ✨ notice, and the new form speaks next. On Discord the character's webhook takes the new name and picture; in voice chat the voice changes too (only forms with a voice are offered there) |
 
 Every command has its own switch under **Behavior → Commands**. The system prompt only mentions commands that are switched on. In voice chat, reactions, profile pictures, drawings, GIFs and files are left out.
 

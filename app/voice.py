@@ -249,7 +249,7 @@ class VoiceSession:
         if not llm.ready:
             log(f"[voice] {self.char.name} can't answer: model not loaded")
             return
-        tools = self.bot.tools_for(voice=True)
+        tools = self.bot.tools_for(voice=True, char=self.char)
         system = self.bot._system_prompt(self.channel, self.char, present=[self.char.name], tools=tools) + \
             VOICE_RULES.format(channel=self.channel.name)
         budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256 - tools_tokens(tools)
@@ -286,6 +286,17 @@ class VoiceSession:
         if res.leave:
             await self.bot.leave_voice(self.channel.guild, f"{self.char.name} decided to leave {self.channel_label}.",
                                        f"👋 **{self.char.name}** left voice chat.")
+        elif res.transform and not self.closed:
+            new = self.core.characters.get(res.transform)
+            if new:
+                old, self.char = self.char, new        # its voice changes with it
+                mem = self.core.memory
+                mem.add(new.name, mem.new_entry(kind="event", channel_id=self.channel.id,
+                                                channel_name=self.channel_label,
+                                                text=f"{old.name} transformed into {new.name}."))
+                log(f"[voice] {old.name} transformed into {new.name}")
+                await self.bot.announce(self.text_channel, f"✨ **{old.name}** transformed into **{new.name}**.")
+                self.again = True                       # the new form speaks next
 
     def _speech(self, text):
         if self.settings.get("local_tts"):

@@ -25,6 +25,9 @@ class Core:
         self.cfg = Config()
         self.characters = CharacterStore()
         self.memory = MemoryBank(history_limit=int(self.cfg["behavior"]["history_limit"]))
+        self.memory.set_links(self.characters.groups())   # linked forms share one memory
+        # later changes (the Characters page) are applied on the core loop, where the memory is used
+        self.characters.on_reload = lambda groups: self.loop.call_soon_threadsafe(self.memory.set_links, groups)
         self.engine = Engine(self.cfg)
         self.llm = LlamaServer(self.cfg, self.engine)
         self.games = GameWatcher(self)

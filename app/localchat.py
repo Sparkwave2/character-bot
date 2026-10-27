@@ -190,6 +190,9 @@ class LocalChat(ChatLogic):
             return self.notice(f"No character named **{name}**.")
         if char.name.lower() in self.members:
             return self.notice(f"**{char.name}** is already here.")
+        other = self.form_here(LOCAL_ID, char)
+        if other:
+            return self.notice(f"**{char.name}** is already here as **{other}** (they're forms of the same character).")
         self.members[char.name.lower()] = {"name": char.name}
         self.notice(f"✨ **{char.name}** has been summoned.")
         self._backfill(char.name)
@@ -298,6 +301,13 @@ class LocalChat(ChatLogic):
             await asyncio.Event().wait()
         finally:
             self.typing = None
+
+    async def swap_form(self, channel, old, new):
+        if not self.members.pop(old.name.lower(), None):
+            return False
+        self.members[new.name.lower()] = {"name": new.name}
+        self.save()
+        return True
 
     async def remove_character(self, channel, name, reason):
         info = self.members.pop(name.lower(), None)

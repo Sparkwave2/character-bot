@@ -60,7 +60,8 @@ class MemoryBank:
     def __init__(self, path=MEMORY_PATH, history_limit=400):
         self.path = path
         self.history_limit = history_limit
-        self.memories = {}        # char name lower -> deque[Entry]
+        self.memories = {}        # memory key (char name lower, or its forms' shared key) -> deque[Entry]
+        self.links = {}           # char name lower -> shared key, for characters linked as forms
         self.by_msg = {}          # message id -> Entry (shared objects)
         self.by_ref = {}          # ref -> Entry
         self.next_ref = 1
@@ -78,6 +79,7 @@ class MemoryBank:
         except (OSError, json.JSONDecodeError):
             return
         self.next_ref = data.get("next_ref", 1)
+        self.links = data.get("links", {})
         shared = {}
         for name, entries in data.get("characters", {}).items():
             dq = deque()
@@ -91,7 +93,7 @@ class MemoryBank:
 
     def save(self):
         with self._lock:
-            data = {"next_ref": self.next_ref,
+            data = {"next_ref": self.next_ref, "links": self.links,
                     "characters": {n: [e.to_json() for e in dq] for n, dq in self.memories.items()}}
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -100,6 +102,41 @@ class MemoryBank:
             self.dirty = False
 
     # ---- mutation -----------------------------------------------------------
+    # ---- linked forms -------------------------------------------------------
+    def key(self, char_name):
+        name = (char_name or "").lower()
+        return self.links.get(name, name)
+
+    def set_links(self, groups):
+        """`groups` are lists of names that share one memory (a character and its forms). Memories
+        of newly linked characters are merged; a character taken out of a group keeps a copy."""
+        new = {}
+        for g in groups:
+            names = sorted({n.lower() for n in g})
+            for n in names:
+                new[n] = names[0]
+        old = self.links
+        changed = [n for n in set(old) | set(new) if old.get(n, n) != new.get(n, n)]
+        if not changed and old == new:
+            return
+        # everyone whose memory is touched: the changed names and whoever shares a key with them before or after
+        old_keys, new_keys = {old.get(c, c) for c in changed}, {new.get(c, c) for c in changed}
+        moving = set(changed) | {n for n in set(old) | set(new)
+                                 if old.get(n, n) in old_keys or new.get(n, n) in new_keys}
+        before = {n: list(self.memories.get(old.get(n, n), ())) for n in moving}
+        for n in moving:
+            self.memories.pop(old.get(n, n), None)
+        for n in moving:
+            dq = self.memories.setdefault(new.get(n, n), deque())
+            have = {id(e) for e in dq}
+            add = [e for e in before[n] if id(e) not in have]
+            if add:
+                items = sorted(list(dq) + add, key=lambda e: e.ts)[-self.history_limit:]
+                dq.clear()
+                dq.extend(items)
+        self.links = new
+        self.dirty = True
+
     def _index(self, e):
         if e.msg_id:
             self.by_msg[e.msg_id] = e
@@ -116,7 +153,7 @@ class MemoryBank:
         return e
 
     def add(self, char_name, entry):
-        dq = self.memories.setdefault(char_name.lower(), deque())
+        dq = self.memories.setdefault(self.key(char_name), deque())
         if any(x is entry for x in list(dq)[-50:]):
             return
         # keep chronological order (backfill may insert older messages)
@@ -142,18 +179,18 @@ class MemoryBank:
         self.dirty = True
 
     def forget(self, char_name):
-        self.memories.pop(char_name.lower(), None)
+        self.memories.pop(self.key(char_name), None)
         self.dirty = True
 
     def entries(self, char_name):
-        return list(self.memories.get(char_name.lower(), ()))
+        return list(self.memories.get(self.key(char_name), ()))
 
     # ---- prompt building ----------------------------------------------------
     def build_messages(self, char_name, system_prompt, current_channel_id, budget,
                        image_cost, max_images, dry_run=False):
         """Return OpenAI-style message list fitting in `budget` tokens.
         Drops entries that no longer fit from the memory permanently (unless `dry_run`)."""
-        dq = self.memories.get(char_name.lower(), deque())
+        dq = self.memories.get(self.key(char_name), deque())
         remaining = budget - est_tokens(system_prompt)
         picked, images_left = [], max_images
         cut_index = 0
@@ -179,7 +216,8 @@ class MemoryBank:
 
         msgs = [{"role": "system", "content": system_prompt}]
         for e, text, imgs in picked:
-            if e.char_name and e.char_name.lower() == char_name.lower() and e.kind == "msg":
+            if e.char_name and self.key(e.char_name) == self.key(char_name) and e.kind == "msg":
+                # its own message, or one from another of its forms (the same being, before transforming)
                 # its own drawings and GIFs are already recorded as events ("Mayo drew a picture"); a bare
                 # "..." or GIF link as its own message would only teach it to write those instead
                 if MEDIA_ONLY_RE.fullmatch(e.text or "") or GIF_LINK_RE.fullmatch(e.text.strip()):

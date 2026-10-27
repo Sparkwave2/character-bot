@@ -890,6 +890,11 @@ class App(ctk.CTk):
         ctk.CTkEntry(drow, textvariable=self.char_desc, height=34, fg_color=CARD, border_color=BORDER,
                      placeholder_text="One line about them, shown in /characters and the summon list").grid(
             row=0, column=1, sticky="ew")
+        ctk.CTkLabel(drow, text="Forms", text_color=MUTED).grid(row=0, column=2, padx=(16, 10))
+        self.char_forms, self.char_forms_text = [], tk.StringVar()
+        ctk.CTkEntry(drow, textvariable=self.char_forms_text, height=34, width=190, fg_color=CARD,
+                     border_color=BORDER, state="readonly").grid(row=0, column=3)
+        self.button(drow, "Pick…", self.pick_forms, primary=False, width=80).grid(row=0, column=4, padx=(8, 0))
         vrow = ctk.CTkFrame(ed, fg_color="transparent")
         vrow.grid(row=3, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 10))
         vrow.grid_columnconfigure(1, weight=1)
@@ -935,6 +940,7 @@ class App(ctk.CTk):
         self.avatar_choice = None
         self.char_name.set(ch.name)
         self.char_desc.set(ch.description)
+        self._set_forms([c.name for c in self.core.characters.forms_of(ch)])
         self.char_voice.set(ch.voice)
         self.char_local_voice.set(ch.local_voice)
         self.char_prompt.delete("1.0", "end")
@@ -949,6 +955,7 @@ class App(ctk.CTk):
         self.avatar_choice = None
         self.char_name.set("")
         self.char_desc.set("")
+        self._set_forms([])
         self.char_voice.set("")
         self.char_local_voice.set("")
         self.char_prompt.delete("1.0", "end")
@@ -1001,9 +1008,12 @@ class App(ctk.CTk):
         if existing and (not old or existing.path != old.path):
             messagebox.showerror("Character", f"A character named {name} already exists.")
             return
+        store = self.core.characters
+        old_forms = [c.name for c in store.forms_of(old)] if old else []
         ch = Character(name, self.char_prompt.get("1.0", "end").strip(), old.avatar if old else "", "",
                        self.char_desc.get().strip(), self.char_voice.get().strip(),
-                       dict(old.extra) if old else {}, self.char_local_voice.get().strip())
+                       dict(old.extra) if old else {}, self.char_local_voice.get().strip(),
+                       [n for n in self.char_forms if n.lower() != name.lower()])
         ch.path = os.path.join(CHARACTERS_DIR, slug(name) + ".json")
         if self.avatar_choice is not None:
             dest = os.path.join(CHARACTERS_DIR, slug(name) + ".png")
@@ -1011,9 +1021,10 @@ class App(ctk.CTk):
             ch.avatar = os.path.basename(dest)
         elif old and old.avatar and old.avatar_path() and not old.avatar.startswith("data:"):
             ch.avatar = old.avatar if os.path.isabs(old.avatar) else old.avatar
-        self.core.characters.save(ch, old_path=old.path if old else None)
-        self.select_character(self.core.characters.get(name))
-        log(f"[gui] saved character {name}")
+        store.save(ch, old_path=old.path if old else None)
+        store.link_forms(store.get(name), old.name if old else None, old_forms)   # links go both ways
+        self.select_character(store.get(name))
+        log(f"[gui] saved character {name}" + (f" (forms: {', '.join(ch.forms)})" if ch.forms else ""))
 
     def pick_voice(self):
         if not self.core.tts.key:
@@ -1047,6 +1058,44 @@ class App(ctk.CTk):
             ctk.CTkButton(lst, text=f"{name}   ·   {label}", anchor="w", height=34, fg_color="transparent",
                           hover_color=CARD, text_color="#e6e8ef" if free else MUTED,
                           command=lambda v=vid: choose(v)).pack(fill="x", padx=4, pady=1)
+
+    def _set_forms(self, names):
+        self.char_forms = list(names)
+        self.char_forms_text.set(", ".join(names) or "none")
+
+    def pick_forms(self):
+        """Which characters this one can transform into (and so shares its memory with)."""
+        me = self.char_name.get().strip().lower()
+        others = [c for c in self.core.characters.characters.values() if c.name.lower() != me]
+        if not others:
+            messagebox.showinfo("Forms", "Create the other form as a character of its own first.")
+            return
+        win = ctk.CTkToplevel(self, fg_color=BG)
+        win.title("Forms")
+        win.geometry("420x560")
+        win.transient(self)
+        win.after(100, win.grab_set)
+        ctk.CTkLabel(win, justify="left", anchor="w", wraplength=380, text_color=MUTED, text=(
+            "Characters this one can transform into with the transform command. Linked forms are one being: "
+            "they share their memory and notes, and only one of them can be in a channel at a time. "
+            "Links go both ways.")).pack(fill="x", padx=16, pady=(14, 6))
+        lst = ctk.CTkScrollableFrame(win, fg_color=PANEL)
+        lst.pack(fill="both", expand=True, padx=12, pady=6)
+        chosen = {n.lower() for n in self.char_forms}
+        vars_ = {}
+        for c in others:
+            v = tk.BooleanVar(value=c.name.lower() in chosen)
+            vars_[c.name] = v
+            ctk.CTkCheckBox(lst, text=c.name, variable=v, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                            border_color=BORDER).pack(anchor="w", padx=10, pady=4)
+
+        def done():
+            self._set_forms([n for n, v in vars_.items() if v.get()])
+            win.destroy()
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill="x", padx=12, pady=(4, 12))
+        self.button(bar, "OK", done, width=90).pack(side="right")
+        ctk.CTkLabel(bar, text="Save the character to apply.", text_color=MUTED).pack(side="left")
 
     def pick_local_voice(self):
         win = ctk.CTkToplevel(self, fg_color=BG)
