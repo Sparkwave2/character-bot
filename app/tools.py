@@ -120,6 +120,11 @@ def tool_list(enabled, exclude=()):
     return [t for t in ALL_TOOLS if enabled(t["function"]["name"]) and t["function"]["name"] not in exclude]
 
 
+def tools_tokens(tools):
+    """Rough prompt size of the tool definitions (the chat template puts them in the system prompt)."""
+    return int(len(json.dumps(tools, ensure_ascii=False)) / 3.5) + 60 if tools else 0
+
+
 def tool_text_instructions(tools):
     lines = ["You can run commands by writing a block like:",
              '<tool_call>{"name": "add_reaction", "arguments": {"message_ref": 12, "emoji": "😂"}}</tool_call>',

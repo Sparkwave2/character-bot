@@ -16,7 +16,7 @@ from .gifs import GifError, search_gif
 from .media import IMG_EXT_RE, encode_image, fetch_image, images_from_message
 from .agent import describe_action, run_turn
 from .notes import Notebook, current_time
-from .tools import THINK_RE, tool_list, tool_text_instructions
+from .tools import THINK_RE, tool_list, tool_text_instructions, tools_tokens
 from .web import fetch_link, links_in, preview, read_webpage, remove_link, web_search
 
 SYSTEM_RULES = """You are roleplaying as {name} in a Discord server, chatting alongside real people and possibly other AI characters.
@@ -862,6 +862,7 @@ class CharacterBot(discord.Client):
         budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256
         tools = self.tools_for()
         system = self._system_prompt(channel, char, tools=tools)
+        budget -= tools_tokens(tools)
         msgs = self.core.memory.build_messages(char.name, system, channel.id, budget,
                                                int(b["image_token_cost"]), int(b["max_images_in_context"]))
         log(f"[discord] {char.name} is thinking in #{channel.name} ({len(msgs) - 1} context entries)")
@@ -872,7 +873,8 @@ class CharacterBot(discord.Client):
             res = await run_turn(llm, msgs, tools, char.name,
                                  on_react=lambda a: self._react(channel, char.name, a),
                                  on_pfp=lambda name: self._profile_picture(channel, name),
-                                 handlers=self._local_tools(char, channel, info), review=review)
+                                 handlers=self._local_tools(char, channel, info), review=review,
+                                 decide=bool(b.get("decide_commands", True) and lc.get("use_native_tools", True)))
             if finalize and res.text:
                 res.text = await finalize(res.text)
         finally:
@@ -1010,6 +1012,7 @@ class CharacterBot(discord.Client):
         except discord.HTTPException as e:
             log(f"[discord] {char_name} couldn't react with {emoji}: {e}")
             return f"Couldn't react with {emoji} (use a standard unicode emoji)."
+        log(f"[discord] {char_name} reacted {emoji} to #{ref}")
         ev = self.core.memory.new_entry(kind="event", channel_id=ch.id, channel_name=ch.name,
                                         text=f"{char_name} reacted {emoji} to #{ref}")
         self._witness(ch.id, ev)

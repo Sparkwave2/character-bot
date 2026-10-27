@@ -166,8 +166,9 @@ class LlamaServer:
             await self._session.close()
 
     # ---- inference ----------------------------------------------------------
-    async def chat(self, messages, tools=None):
-        """Returns the raw `message` dict of the first choice."""
+    async def chat(self, messages, tools=None, tool_choice="auto"):
+        """Returns the raw `message` dict of the first choice. tool_choice="required" makes the
+        model call at least one tool (llama-server enforces it with a grammar)."""
         if not self.ready:
             raise RuntimeError("model is not loaded")
         c = self.cfg["llm"]
@@ -182,7 +183,7 @@ class LlamaServer:
         }
         if tools and c.get("use_native_tools", True):
             body["tools"] = tools
-            body["tool_choice"] = "auto"
+            body["tool_choice"] = tool_choice
         session = await self.session()
         async with session.post(self.base_url + "/v1/chat/completions", json=body,
                                 timeout=aiohttp.ClientTimeout(total=600)) as r:
@@ -190,6 +191,8 @@ class LlamaServer:
             if r.status != 200:
                 err = data.get("error", data) if isinstance(data, dict) else data
                 # Some templates reject tools; retry once without them.
+                if "tools" in body and tool_choice != "auto":
+                    raise RuntimeError(f"tool_choice={tool_choice} rejected: {err}")
                 if "tools" in body and "tool" in str(err).lower():
                     log(f"[llm] request with tools failed ({err}); retrying without native tools")
                     c["use_native_tools"] = False

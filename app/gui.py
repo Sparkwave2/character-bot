@@ -723,7 +723,9 @@ class App(ctk.CTk):
                  ("bot_reply_chance", "Character reply chance", "float", "0–1, when one character speaks unprompted"),
                  ("backfill_messages", "History on summon", "int", "Recent messages read when summoned"),
                  ("history_limit", "Stored messages per character", "int", "Hard cap; context trimming happens anyway"),
-                 ("typing_indicator", "Show typing indicator", "bool", "")]
+                 ("typing_indicator", "Show typing indicator", "bool", ""),
+                 ("decide_commands", "Ask about commands before each reply", "bool",
+                  "One extra model call that makes characters actually use their commands")]
         self.behavior_fields = [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
         c = self.card(s, 3, "Images, audio and links")
         specs = [("max_images_in_context", "Images kept in context", "int", "Older images become [image]"),

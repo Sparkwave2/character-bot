@@ -12,12 +12,23 @@ MAX_ROUNDS = 6
 
 # Small models like to narrate a command ("*reacts with 😂*", "let me look that up") instead of
 # calling it. Each entry: command to suggest, commands that count as doing it, what gives it away.
-_ACT = r"\*[^*\n]{0,60}\b(?:%s)\b[^*\n]{0,60}\*"          # inside an *action*
+class _Act(str):
+    """`_ACT % words` matches those words inside an *action* or an (action)."""
+    def __mod__(self, words):
+        return (r"\*[^*\n]{0,60}\b(?:%s)\b[^*\n]{0,60}\*|\([^()\n]{0,60}\b(?:%s)\b[^()\n]{0,60}\)"
+                % (words, words))
+
+
+_ACT = _Act()
+_WILL = r"\b(?:i'?ll|i will|let me|lemme|i'?m gonna|i'?m going to|gonna)\s+"
 CLAIMS = [
     ("add_reaction", {"add_reaction"}, re.compile(
-        _ACT % r"react(?:s|ed|ing)?" + r"|\breact(?:s|ed)? with\b", re.I)),
+        _ACT % r"react\w*|adds? (?:a |an )?\S* ?reaction" + r"|\breact(?:s|ed)? with\b"
+        + r"|" + _WILL + r"(?:react|add\s+(?:a|an|my)\s+(?:\S+\s+){0,3}?reactions?|use\s+a\s+tool\s+call)\b"
+        r"|\b(?:i\s+)?(?:just\s+)?(?:reacted|added\s+(?:a|an|my)\s+(?:\S+\s+){0,3}?reaction)\b", re.I)),
     ("write_note", {"write_note"}, re.compile(
         _ACT % r"writes|jots|scribbles|takes (?:a )?notes?|notes (?:it|that|this) down" +
+        r"|" + _WILL + r"(?:note\s+(?:that|it|this)|make\s+a\s+note|take\s+a\s+note)\b"
         r"|\b(?:i'?ll|let me|lemme|i'?m gonna|gonna)\s+(?:write|jot|note|put)\b[^.!?\n]{0,30}\b(?:down|notes?|notebook)\b"
         r"|\b(?:written|wrote|jotted|noted)\s+(?:that|it|this)\s+down\b"
         r"|\b(?:added|saved|put)\s+(?:that|it|this)\s+(?:to|in(?:to)?)\s+my\s+(?:notes?|notebook)\b"
@@ -77,19 +88,65 @@ def describe_action(name, args):
     }.get(name, lambda: None)()   # reactions and leaving are recorded as events already
 
 
-async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, handlers=None, review=None):
+JUST_REPLY = {"type": "function", "function": {
+    "name": "just_reply",
+    "description": "Use no command right now and go straight to writing your reply.",
+    "parameters": {"type": "object", "properties": {}, "required": []}}}
+DECIDE = ("[system] Before you write your reply, decide whether one of your commands fits right now, "
+          "for example {examples}. Call the ones you want (several are fine), or call just_reply if none "
+          "fit. You write your message right after this.")
+EXAMPLES = [("add_reaction", "reacting to a message"), ("write_note", "writing down something worth remembering"),
+            ("read_note", "checking your notes"), ("get_current_time", "checking the time"),
+            ("web_search", "looking something up"), ("draw_image", "drawing what was asked for"),
+            ("post_gif", "posting a GIF"), ("leave_channel", "leaving when you're told to go")]
+_decide_broken = False
+
+
+async def _decide(llm, msgs, tools, char_name):
+    """Small models rarely pick a command on their own while they're busy roleplaying. One extra
+    call where a command is required (just_reply counts) makes the choice explicit. Returns the
+    model's reply if it chose real commands (the question is then kept in `msgs`), else None."""
+    global _decide_broken
+    if _decide_broken:
+        return None
+    names = {t["function"]["name"] for t in tools}
+    examples = ", ".join(e for n, e in EXAMPLES if n in names) or "using a command"
+    question = {"role": "user", "content": DECIDE.format(examples=examples)}
+    try:
+        reply = await llm.chat(msgs + [question], tools + [JUST_REPLY], tool_choice="required")
+    except Exception as e:
+        _decide_broken = "rejected" in str(e)   # this server/template can't force tool calls
+        log(f"[tools] command check skipped: {e}", level="warn")
+        return None
+    _text, calls = parse_reply(reply, char_name)
+    if not any(n != "just_reply" for n, _, _ in calls):
+        return None
+    msgs.append(question)
+    return reply
+
+
+async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, handlers=None, review=None,
+                   decide=False):
     """`on_react(args) -> str` performs a reaction and returns a result line.
     `on_pfp(name) -> list[content parts]` returns the picture (or a text part).
     `handlers` maps other command names to `fn(args) -> str` or an async one (notes, time, web).
     `review(text) -> (note or None, [content parts])` looks at the finished message once; a note
-    (e.g. "this link is dead") sends it back for one rewrite."""
+    (e.g. "this link is dead") sends it back for one rewrite.
+    `decide` first asks the model which commands it wants (see _decide)."""
     handlers = handlers or {}
     available = {t["function"]["name"] for t in tools}
     res = TurnResult()
     texts, reacted, checked, fallback = [], set(), False, ""
+    first = await _decide(llm, msgs, tools, char_name) if decide and tools else None
     for round_no in range(MAX_ROUNDS):
-        reply = await llm.chat(msgs, tools)
+        if first is not None:
+            reply, first = first, None
+        else:
+            reply = await llm.chat(msgs, tools)
         text, calls = parse_reply(reply, char_name)
+        for name, args, _ in calls:
+            if name != "just_reply":
+                log(f"[tools] {char_name} used {name}({json.dumps(args, ensure_ascii=False)[:120]})")
         if text:
             texts.append(text)
         if not calls:
@@ -118,7 +175,7 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
             msgs.append({"role": "user", "content": [{"type": "text", "text": body}] + pictures
                          if pictures else body})
             continue
-        res.actions += [(n, a) for n, a, _ in calls]
+        res.actions += [(n, a) for n, a, _ in calls if n != "just_reply"]
         names = {n for n, _, _ in calls}
         if "stay_silent" in names:
             res.silent = True
@@ -126,7 +183,9 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
 
         results, images = [], []
         for name, args, _ in calls:
-            if name == "add_reaction":
+            if name == "just_reply":
+                results.append("OK.")
+            elif name == "add_reaction":
                 results.append(await _react_each(args, reacted, on_react))
             elif name == "view_profile_picture" and on_pfp:
                 images += await on_pfp(str(args.get("name", "")))

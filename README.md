@@ -80,6 +80,8 @@ Characters can also act through MCP-style tool calls (OpenAI tool schemas, which
 
 Every command has its own switch under **Behavior → Commands**. The system prompt only mentions commands that are switched on. In voice chat, reactions, profile pictures, drawings and GIFs are left out.
 
+Before each reply in text chat, the model is asked whether a command fits right now. It must call at least one command, or `just_reply`. This costs one extra model call per reply and can be turned off under **Behavior → Ask about commands before each reply**. If the server can't force a tool call, the step switches itself off. Every command a character runs is logged as `[tools] Name used command(...)`.
+
 Small models often narrate a command instead of running it ("*reacts with 😂*", "I'll write that down", "let me look it up"). When a reply says that without the matching command, the character is told once that nothing happened and asked to use the command and rewrite its message; the log shows `[tools] … asking again`. Commands a character used (notes, searches, checking the time) are also kept in its own memory, so it sees in its history that it really uses them.
 
 ## How it behaves

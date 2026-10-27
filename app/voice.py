@@ -16,6 +16,7 @@ from discord.ext.voice_recv.rtp import OPUS_SILENCE
 
 from .agent import run_turn
 from .log import log
+from .tools import tools_tokens
 from .tts import TTSError, speakable
 
 BYTES_PER_SEC = 48000 * 2 * 2      # Discord PCM: 48 kHz, 16-bit, stereo
@@ -181,7 +182,7 @@ class VoiceSession:
         tools = self.bot.tools_for(voice=True)
         system = self.bot._system_prompt(self.channel, self.char, present=[self.char.name], tools=tools) + \
             VOICE_RULES.format(channel=self.channel.name)
-        budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256
+        budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256 - tools_tokens(tools)
         async with self.bot.gen_lock:
             msgs = self.core.memory.build_messages(self.char.name, system, self.channel.id, budget,
                                                    int(b["image_token_cost"]), int(b["max_images_in_context"]))
