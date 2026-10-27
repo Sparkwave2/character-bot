@@ -5,7 +5,7 @@ import queue
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageSequence
 
 
 def file_key(path, *extra):
@@ -39,6 +39,19 @@ def thumbnail(path, box):
     return im.convert("RGBA")
 
 
+def gif_frames(path, box, limit=120):
+    """[(frame, milliseconds)] of an animated picture, each frame shrunk to fit `box`."""
+    im = Image.open(path)
+    frames = []
+    for frame in ImageSequence.Iterator(im):
+        f = frame.convert("RGBA")
+        f.thumbnail(box)
+        frames.append((f, max(20, int(frame.info.get("duration") or 100))))
+        if len(frames) >= limit:
+            break
+    return frames
+
+
 class ImageLoader:
     def __init__(self, root, workers=3):
         self.root = root
@@ -48,9 +61,10 @@ class ImageLoader:
         self.waiting = {}     # key -> [deliver, ...]
         self.root.after(30, self._pump)
 
-    def get(self, key, prepare, deliver):
-        """Runs `prepare() -> PIL image` on a worker (once per key) and then `deliver(image)` on the Tk
-        thread; right away if it is cached. `image` is None when the file couldn't be opened."""
+    def get(self, key, prepare, deliver, cache=True):
+        """Runs `prepare() -> PIL image` (or anything else, e.g. GIF frames) on a worker, once per key,
+        and then `deliver(result)` on the Tk thread; right away if it is cached. `result` is None when
+        the file couldn't be opened."""
         if key in self.cache:
             return deliver(self.cache[key])
         if key in self.waiting:
@@ -61,19 +75,21 @@ class ImageLoader:
         def work():
             try:
                 im = prepare()
-                im.load()
+                if isinstance(im, Image.Image):
+                    im.load()
             except Exception:
                 im = None
-            self.done.put((key, im))
+            self.done.put((key, im, cache))
         self.pool.submit(work)
 
     def _pump(self):
         try:
             while True:
-                key, im = self.done.get_nowait()
+                key, im, keep = self.done.get_nowait()
                 if len(self.cache) > 400:
                     self.cache.clear()
-                self.cache[key] = im
+                if keep:
+                    self.cache[key] = im
                 for deliver in self.waiting.pop(key, []):
                     try:
                         deliver(im)

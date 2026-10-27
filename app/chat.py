@@ -397,6 +397,10 @@ class ChatLogic:
                 mem.add(char.name, mem.new_entry(kind="event", channel_id=channel_id, channel_name=channel_name,
                                                  text=f"{char.name} {what}."))
 
+    async def post_gif(self, channel, info, char, url, title):
+        """Discord shows a .gif link as the GIF itself."""
+        await self._send(channel, info, char, url)
+
     # ---- command handlers ---------------------------------------------------
     def _local_tools(self, char, channel=None, info=None, msgs=None):
         """`channel`/`info` (where and as whom to post) are needed for commands that post something;
@@ -458,7 +462,7 @@ class ChatLogic:
                 log(f"[gifs] {char.name} couldn't post a GIF: {e}", level="warn")
                 return f"No GIF posted: {e}."
             log(f"[gifs] {char.name} posted a GIF for {q!r}")
-            await self._send(channel, info, char, url)
+            await self.post_gif(channel, info, char, url, title)
             return f'Posted a GIF ("{title}").'
 
         def logged(fn, what):

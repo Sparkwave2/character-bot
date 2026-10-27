@@ -9,13 +9,14 @@ from tkinter import filedialog
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from .imageload import circle, file_key, thumbnail
+from .imageload import circle, file_key, gif_frames, thumbnail
 from .localchat import LOCAL_FILES, is_image
 from .markdown import parse
 
 TEXT, MUTED, NAME, CHAR_NAME, LINK = "#dbdee1", "#949ba4", "#f2f3f5", "#c9b8ff", "#00a8fc"
 BG, CODE_BG, NOTICE = "#1e1f24", "#2b2d31", "#9aa0ad"
 AVATAR, INDENT, THUMB = 40, 56, (360, 280)
+MAX_PLAYING = 12                 # GIFs that keep moving; older ones stay still
 COLORS = ["#5865f2", "#3ba55c", "#faa61a", "#ed4245", "#eb459e", "#7c5cff"]
 
 
@@ -54,6 +55,7 @@ class ChatView(tk.Frame):
         self.images, self.avatars, self.fonts = [], {}, {}   # avatars: author -> (PhotoImage, is_char)
         self.n = 0                       # counter for one-off tags (links, spoilers, pictures)
         self.gen = 0                     # bumped by clear(), so pictures still loading for old messages are dropped
+        self.playing = []                # image names of the GIFs that are animating
         self.waiting = ImageTk.PhotoImage(Image.new("RGBA", (240, 160), CODE_BG))
         self.last = None                 # (author, ts) of the last message, to group like Discord
         t = self.text
@@ -208,7 +210,33 @@ class ChatView(tk.Frame):
             t.image_configure(name, image=photo)
             if self.stick:
                 t.see("end")
-        self.loader.get(file_key(path, THUMB), lambda: thumbnail(path, THUMB), show)
+
+        def play(frames):
+            if not frames or gen != self.gen:
+                return
+            if len(frames) == 1:
+                return show(frames[0][0])
+            photos = [(ImageTk.PhotoImage(f), ms) for f, ms in frames]
+            self.images.append(photos)
+            t.image_configure(name, image=photos[0][0])
+            if self.stick:
+                t.see("end")
+            self.playing.append(name)
+            del self.playing[:-MAX_PLAYING]     # older GIFs stop on the frame they're at
+
+            def step(i):
+                if gen != self.gen or name not in self.playing:
+                    return
+                try:
+                    t.image_configure(name, image=photos[i][0])
+                except tk.TclError:
+                    return
+                self.after(photos[i][1], step, (i + 1) % len(photos))
+            self.after(photos[0][1], step, 1)
+        if path.lower().endswith(".gif"):
+            self.loader.get(file_key(path, THUMB, "gif"), lambda: gif_frames(path, THUMB), play, cache=False)
+        else:
+            self.loader.get(file_key(path, THUMB), lambda: thumbnail(path, THUMB), show)
 
     def _file(self, path, name):
         tag = self._one_off()

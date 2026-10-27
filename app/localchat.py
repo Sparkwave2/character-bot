@@ -23,6 +23,7 @@ TRANSCRIPT = os.path.join(LOCAL_DIR, "chat.json")
 USER_AVATAR = os.path.join(LOCAL_DIR, "you.png")    # your picture in the local chat (Chat page)
 LOCAL_ID = 1                 # the channel id in the characters' memory (Discord ids are far bigger)
 MAX_MESSAGES = 500
+MAX_GIF = 15_000_000
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 COMMAND_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|who|clear)\b[ \t]*([^\n]*)", re.I)
 
@@ -46,7 +47,7 @@ def _readable(path, limit=6000):
 
 class LocalChat(ChatLogic):
     log_tag = "chat"
-    excluded_tools = ("add_reaction", "view_profile_picture", "post_gif")
+    excluded_tools = ("add_reaction", "view_profile_picture")
 
     def __init__(self, core):
         self.core, self.cfg = core, core.cfg
@@ -272,6 +273,19 @@ class LocalChat(ChatLogic):
     async def post_file(self, channel, info, char, name, data):
         msg = self._post(char.name, char=True, files=[self._store(name, data)])
         self._witness(LOCAL_ID, self._entry(msg))
+
+    async def post_gif(self, channel, info, char, url, title):
+        """The window can't show a link as a GIF, so the GIF is downloaded and posted as a picture."""
+        try:
+            async with self.http_session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                data = await r.content.read(MAX_GIF + 1) if r.status == 200 else b""
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            data = b""
+        if not data or len(data) > MAX_GIF:
+            log(f"[gifs] couldn't download the GIF for {char.name}; posting its link", level="warn")
+            return await self._send(channel, info, char, url)
+        await self.post_file(channel, info, char, (re.sub(r"[^\w\-]+", "_", title).strip("_")[:40] or "gif") + ".gif",
+                             data)
 
     async def _typing(self, channel, char=None):
         self.typing = char.name if char else None
