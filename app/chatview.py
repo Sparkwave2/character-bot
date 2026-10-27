@@ -9,6 +9,7 @@ from tkinter import filedialog
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
+from .desktop import BOLD_TTF, MONO_FONT, UI_FONT, open_path
 from .imageload import circle, file_key, gif_frames, thumbnail
 from .localchat import LOCAL_FILES, is_image
 from .markdown import parse
@@ -27,9 +28,9 @@ def round_avatar(path, name, size=AVATAR):
     else:
         im = Image.new("RGBA", (size * 2, size * 2), COLORS[sum(map(ord, name or "?")) % len(COLORS)])
         try:
-            font = ImageFont.truetype("segoeuib.ttf", size)
+            font = ImageFont.truetype(BOLD_TTF, size)
         except OSError:
-            font = None
+            font = ImageFont.load_default(size)   # a scalable built-in font (the bold one isn't installed)
         ImageDraw.Draw(im).text((size, size), (name or "?")[0].upper(), fill="white", anchor="mm", font=font)
         im = circle(im, size)
     return im.resize((size, size), Image.LANCZOS)
@@ -83,7 +84,7 @@ class ChatView(tk.Frame):
     def _font(self, size=10, bold=False, italic=False, mono=False):
         key = (size, bold, italic, mono)
         if key not in self.fonts:
-            self.fonts[key] = tkfont.Font(family="Consolas" if mono else "Segoe UI", size=size,
+            self.fonts[key] = tkfont.Font(family=MONO_FONT if mono else UI_FONT, size=size,
                                           weight="bold" if bold else "normal", slant="italic" if italic else "roman")
         return self.fonts[key]
 
@@ -266,7 +267,7 @@ class ImagePreview(ctk.CTkToplevel):
         bar = ctk.CTkFrame(self, fg_color="#000000")
         bar.pack(fill="x")
         ctk.CTkButton(bar, text="Open original", width=120, fg_color="#2b2d31",
-                      command=lambda: os.startfile(path)).pack(side="right", padx=8, pady=6)
+                      command=lambda: open_path(path)).pack(side="right", padx=8, pady=6)
         ctk.CTkButton(bar, text="Save as…", width=100, fg_color="#2b2d31",
                       command=lambda: _save_copy(path)).pack(side="right", pady=6)
         lab.bind("<Button-1>", lambda e: self.destroy())
@@ -281,7 +282,7 @@ class FilePreview(ctk.CTkToplevel):
         super().__init__(master, fg_color=BG)
         self.title(name)
         self.geometry("760x560")
-        box = ctk.CTkTextbox(self, fg_color=CODE_BG, font=ctk.CTkFont(family="Consolas", size=12), wrap="none")
+        box = ctk.CTkTextbox(self, fg_color=CODE_BG, font=ctk.CTkFont(family=MONO_FONT, size=12), wrap="none")
         box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -292,7 +293,7 @@ class FilePreview(ctk.CTkToplevel):
         bar = ctk.CTkFrame(self, fg_color=BG)
         bar.pack(fill="x", padx=12, pady=(0, 12))
         ctk.CTkButton(bar, text="Open with…", width=110, fg_color="#2b2d31",
-                      command=lambda: os.startfile(path)).pack(side="right")
+                      command=lambda: open_path(path)).pack(side="right")
         ctk.CTkButton(bar, text="Save as…", width=100, fg_color="#2b2d31",
                       command=lambda: _save_copy(path, name)).pack(side="right", padx=8)
         self.bind("<Escape>", lambda e: self.destroy())

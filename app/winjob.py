@@ -1,11 +1,32 @@
 """Windows Job Object that kills every assigned child process when this
 program exits, even on a crash, so llama-server can never be orphaned
-holding VRAM."""
+holding VRAM. On Linux the kernel does the same through PR_SET_PDEATHSIG
+(see child_options)."""
 import ctypes
+import signal
+import subprocess
 import sys
 from ctypes import wintypes
 
 _job = None
+
+
+def _die_with_parent():
+    """Runs in the child before it starts (Linux): SIGTERM it when we exit."""
+    try:
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # 1 = PR_SET_PDEATHSIG
+    except OSError:
+        pass
+
+
+def child_options():
+    """Extra arguments for starting a helper process: no console window on Windows,
+    and on Linux the child is killed when this program exits."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform.startswith("linux"):
+        return {"preexec_fn": _die_with_parent}
+    return {}
 
 
 def _create_job():

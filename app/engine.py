@@ -301,14 +301,15 @@ class Engine:
                 break
         if not server:
             raise RuntimeError(f"{EXE} not found in the downloaded build")
-        # CUDA runtime DLLs must sit next to the executable on Windows
-        if backend == "cuda" and hw["os"] == "win":
+        # the CUDA runtime (DLLs on Windows, .so files on Linux) must sit next to the executable
+        if backend == "cuda":
             server_dir = os.path.dirname(server)
             for dirpath, _, files in os.walk(staging):
                 if dirpath == server_dir:
                     continue
                 for fn in files:
-                    if fn.lower().endswith(".dll") and not os.path.exists(os.path.join(server_dir, fn)):
+                    lib = fn.lower().endswith(".dll") if hw["os"] == "win" else ".so" in fn
+                    if lib and not os.path.exists(os.path.join(server_dir, fn)):
                         shutil.move(os.path.join(dirpath, fn), server_dir)
         if os.name != "nt":
             for fn in os.listdir(os.path.dirname(server)):

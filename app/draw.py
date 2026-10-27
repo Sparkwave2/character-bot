@@ -82,13 +82,17 @@ class ImageGen:
     async def _launch(self, folder):
         port = urlparse(self.url).port or 7861
         args = ["--api", "--nowebui", "--port", str(port)] + (self.s.get("launch_args") or "").split()
-        py = os.path.join(folder, "venv", "Scripts", "python.exe")
-        cmd = [py, "launch.py", *args] if os.path.isfile(py) else ["cmd", "/c", "webui.bat", *args]
+        if sys.platform == "win32":
+            py = os.path.join(folder, "venv", "Scripts", "python.exe")
+            cmd = [py, "launch.py", *args] if os.path.isfile(py) else ["cmd", "/c", "webui.bat", *args]
+        else:
+            py = os.path.join(folder, "venv", "bin", "python")
+            cmd = [py, "launch.py", *args] if os.path.isfile(py) else ["bash", "webui.sh", *args]
         env = dict(os.environ, COMMANDLINE_ARGS="", PYTHONUNBUFFERED="1")
         for k in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):   # don't leak our own venv into theirs
             env.pop(k, None)
         log(f"[draw] starting the WebUI: {' '.join(cmd)}")
-        kw = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+        kw = winjob.child_options()
         self.proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=folder, env=env, stdin=subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kw)

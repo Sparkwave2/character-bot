@@ -13,6 +13,7 @@ from .characters import Character, slug
 from .chatview import ChatView
 from .config import CHARACTERS_DIR
 from .cropper import CropDialog, load_image
+from .desktop import MONO_FONT, open_path
 from .draw import SDXL_MIN_BYTES, list_checkpoints
 from .engine import resolve_backend
 from .games import running_process_names
@@ -420,7 +421,10 @@ class App(ctk.CTk):
         self._chat_refresh_pending()
 
     def _chat_paste(self, event):
-        clip = ImageGrab.grabclipboard()
+        try:
+            clip = ImageGrab.grabclipboard()
+        except (NotImplementedError, OSError):   # Linux without xclip / wl-clipboard
+            clip = None
         if isinstance(clip, Image.Image):
             buf = io.BytesIO()
             clip.save(buf, "PNG")
@@ -681,7 +685,7 @@ class App(ctk.CTk):
             messagebox.showinfo("Verbose model log", "Nothing is logged yet. Turn on Verbose model log, Save, "
                                                      "and let a character reply.")
             return
-        os.startfile(VERBOSE_LOG)
+        open_path(VERBOSE_LOG)
 
     BACKEND_LABELS = {"auto": "Auto (recommended)", "cuda": "CUDA (NVIDIA)", "vulkan": "Vulkan (any GPU)",
                       "cpu": "CPU only", "rocm": "ROCm (AMD)"}
@@ -1298,7 +1302,7 @@ class App(ctk.CTk):
         self.header(f, "Logs")
         f.grid_rowconfigure(2, weight=1)
         self.log_box = ctk.CTkTextbox(f, fg_color=PANEL, border_color=BORDER, border_width=1,
-                                      font=ctk.CTkFont(family="Consolas", size=12), wrap="word")
+                                      font=ctk.CTkFont(family=MONO_FONT, size=12), wrap="word")
         self.log_box.grid(row=2, column=0, sticky="nsew", padx=32, pady=(14, 8))
         self.log_box.configure(state="disabled")
         bar = ctk.CTkFrame(f, fg_color=BG)

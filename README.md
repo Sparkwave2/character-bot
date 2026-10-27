@@ -4,7 +4,20 @@ A local AI character bot for Discord. A Qwen vision model (GGUF) runs through ll
 
 ## Setup
 
-1. **Python 3.10+.** Double-click `run.bat`. On first run it creates `.venv` and installs the requirements.
+1. **Python 3.10+.** On Windows, double-click `run.bat`. On first run it creates `.venv` and installs the requirements. On Linux, run the installer once, then start the app with `./run.sh` or from your applications menu:
+
+   ```bash
+   git clone https://github.com/Sparkwave2/character-bot.git && cd character-bot && ./install.sh
+   ```
+
+   The installer works with apt (Debian, Ubuntu, Mint), dnf (Fedora), pacman (Arch) and zypper (openSUSE). It asks before each step:
+   - The system packages: Python with Tkinter and venv, the Opus library for voice chat, and `xclip` for pasting pictures. This step uses sudo.
+   - A `.venv` with the requirements.
+   - On an NVIDIA GPU, the GPU libraries for speech recognition.
+   - Optionally the local Kokoro voice.
+   - A menu entry.
+
+   `./install.sh --yes` accepts everything, and `--no-system-packages` skips the sudo step. Running it again updates the Python packages. On Linux, llama.cpp installs the official Ubuntu build (CUDA, Vulkan or CPU), which works on other distributions too.
 2. **Model.** The easiest way is **Model → Choose a model…** (see below): it lists vision models that work with the app, marks which ones fit your graphics card, and downloads the one you pick. You can also bring your own: a vision GGUF *and* its matching `mmproj-*.gguf` projector, selected under **Model**. Then click **Load**. You don't need to install llama.cpp yourself (see below).
 3. **Discord bot.** Do this in https://discord.com/developers/applications:
    - Create an application, then a bot, and copy its token into **Discord → Bot token**.

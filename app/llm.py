@@ -5,7 +5,6 @@ import datetime
 import json
 import os
 import shlex
-import subprocess
 import sys
 import threading
 
@@ -129,9 +128,11 @@ class LlamaServer:
                                    "still running?). Close it or change the port.")
             log(f"[llm] starting: {' '.join(args)}")
             self._set(self.STARTING)
-            kwargs = {}
-            if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            kwargs = winjob.child_options()
+            if sys.platform != "win32":   # the build's own libraries (and the CUDA runtime) are next to it
+                lib_dir = os.path.dirname(args[0])
+                kwargs["env"] = dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(
+                    p for p in (lib_dir, os.environ.get("LD_LIBRARY_PATH")) if p))
             try:
                 self.proc = await asyncio.create_subprocess_exec(
                     *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kwargs)
