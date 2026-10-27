@@ -1,50 +1,17 @@
-"""Discord side: slash commands, webhook characters, turn-taking."""
+"""Discord side: slash commands, webhook characters, message intake (the conversation itself is chat.py)."""
 import asyncio
 import io
-import random
 import re
-import time
 from typing import Optional
 
 import aiohttp
 import discord
 from discord import app_commands
 
+from .chat import ChatLogic
 from .config import load_state, save_state
 from .log import log
-from .draw import DrawError
-from .gifs import GifError, search_gif
-from .media import IMG_EXT_RE, encode_image, fetch_image, images_from_message
-from .agent import describe_action, run_turn
-from .notes import Notebook, current_time
-from .tools import THINK_RE, tool_list, tool_text_instructions, tools_tokens
-from .web import fetch_link, links_in, preview, read_webpage, remove_link, web_search
-
-# Sent with every prompt, so every sentence here costs context: keep it short.
-SYSTEM_RULES = """You are {name}, chatting in a Discord server with real people and maybe other AI characters.
-
-{prompt}
-
-Chat format: messages look like "[#N] Name: text"; other AI characters are marked "(character)", messages from other channels "in #channel". You see display names{pfp} and posted images. Reactions show up as events; never reply to one.
-{commands}{notebook}Write only {name}'s next message: no "[#N]" or name prefix, never speak for others. Keep it natural, usually 1-3 short paragraphs.
-
-You are in #{channel} on "{guild}". Characters here: {present}.
-{tool_text}"""
-
-
-COMMAND_LINES = """Alongside your reply you can use commands; use them freely when they fit: {hints}. Only commands make things happen: writing "*reacts*" or "I'll note that" without the command does nothing, so never claim it.
-"""
-NOTEBOOK_LINE = """Your notebook lasts forever, even after chat history is forgotten.{write} {notes}
-"""
-# (command, when to use it)
-COMMAND_HINTS = [
-    ("add_reaction", "react to messages that deserve it"),
-    ("get_current_time", "check the time instead of guessing it"),
-    ("web_search", "search instead of guessing facts"),
-    ("draw_image", "draw when asked"),
-    ("post_gif", "post a GIF now and then"),
-    ("leave_channel", "leave_channel when you're told to go and agree"),
-]
+from .media import fetch_image, images_from_message
 
 TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|context|join|leave)\b[ \t]*([^\n]*)",
                           re.I)
@@ -108,7 +75,9 @@ class CharacterPicker(discord.ui.View):
         return chosen
 
 
-class CharacterBot(discord.Client):
+class CharacterBot(ChatLogic, discord.Client):
+    log_tag = "discord"
+
     def __init__(self, core):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -122,22 +91,16 @@ class CharacterBot(discord.Client):
         self.state = load_state()
         self.state.setdefault("summoned", {})   # channel id -> {char lower: {name, webhook_id, webhook_url}}
         self.http_session = None
-        self.gen_lock = asyncio.Lock()          # only one character generates at a time
         self.tasks = {}                         # channel id -> asyncio.Task
         self.phase = {}                         # channel id -> "waiting" | "generating"
         self.followup = {}                      # channel id -> trigger to run after generation
         self.recent = {}                        # channel id -> list of recent Entry (turn-taking)
         self.names = {}                         # user id -> display name
         self.voice = {}                         # guild id -> voice.VoiceSession
-        self.context_used = {}                  # char lower -> (tokens of its last reply's biggest call, time)
         self.on_change = lambda: None
         self._register_commands()
 
     # ---- helpers ------------------------------------------------------------
-    @property
-    def behavior(self):
-        return self.cfg["behavior"]
-
     def allowed(self, channel_id):
         return str(channel_id) in {str(c) for c in self.cfg["discord"]["allowed_channels"]}
 
@@ -329,15 +292,23 @@ class CharacterBot(discord.Client):
         await self.cmd_dismiss(interaction, "all")
 
     async def cmd_forget(self, interaction):
+        """Sends everyone home first (like /gohome), then wipes their memory, so the leave message
+        doesn't stay behind as the first thing they remember."""
         names = [c["name"] for c in self.present(interaction.channel_id).values()]
         if not names:
             return await interaction.response.send_message("Nobody is here.", ephemeral=True)
+        await interaction.response.send_message(
+            "🧹 " + ", ".join(f"**{n}**" for n in names) + " went home and forgot everything.")
+        task = self.tasks.pop(interaction.channel_id, None)
+        if task:
+            task.cancel()
+        for n in names:
+            await self.remove_character(interaction.channel, n, f"{n} was sent home from #{interaction.channel.name}.")
         for n in names:
             self.core.memory.forget(n)
+        self.recent.pop(interaction.channel_id, None)
         self.core.memory.save()
-        log(f"[discord] {interaction.user.display_name} wiped the memory of {', '.join(names)}")
-        await interaction.response.send_message(
-            "🧹 " + ", ".join(f"**{n}**" for n in names) + " forgot everything.")
+        log(f"[discord] {interaction.user.display_name} sent {', '.join(names)} home and wiped their memory")
 
     async def typed_command(self, message):
         """Handle a slash command typed out as plain text ("/summon Mayo"). True if it was one."""
@@ -531,6 +502,10 @@ class CharacterBot(discord.Client):
             images = await images_from_message(self.http_session, message, b["max_image_side"],
                                                b["fetch_image_links"])
         text = message.clean_content or ""
+        files = [a.filename for a in message.attachments
+                 if not a.is_voice_message() and not (a.content_type or "").startswith("image/")]
+        if files:
+            text = (text + "\n" + " ".join(f"[attached file: {f}]" for f in files)).strip()
         if not text and message.stickers:
             text = "[sticker: " + ", ".join(s.name for s in message.stickers) + "]"
         if with_images and self.behavior.get("voice_messages", True):
@@ -546,86 +521,6 @@ class CharacterBot(discord.Client):
                              author_id=message.author.id, char_name=char_name, text=text,
                              images=images, reply_ref=reply_ref,
                              ts=message.created_at.timestamp())
-
-    async def _link_previews(self, content, limit=2):
-        """A short look at the web pages linked in a message (images are handled as images)."""
-        urls = [u for u in links_in(content) if not IMG_EXT_RE.search(u)][:limit]
-        if not urls:
-            return ""
-        links = await asyncio.gather(*(fetch_link(self.http_session, u) for u in urls))
-        lines = []
-        for lk in links:
-            log(f"[web] link {lk.url[:80]}: {lk.kind}{' (' + lk.reason + ')' if lk.reason else ''}")
-            if lk.kind == "page":
-                lines.append(await self._describe_page(lk))
-            elif lk.kind != "image":
-                lines.append(preview(lk))
-        return "\n".join(x for x in lines if x)
-
-    def _link_checker(self, char, tools):
-        """(review, finalize) for a character's message: every link is opened before it's posted.
-        Dead ones go back to the character once, image links are shown to it to confirm, and any
-        dead link still left afterwards is taken out."""
-        cache = {}
-        can_search = any(t["function"]["name"] == "web_search" for t in tools)
-
-        async def check(u):
-            if u not in cache:
-                cache[u] = await fetch_link(self.http_session, u, int(self.behavior["max_image_side"]))
-            return cache[u]
-
-        async def review(text):
-            urls = links_in(text)[:6]
-            if not urls:
-                return None, []
-            links = await asyncio.gather(*(check(u) for u in urls))
-            dead = [lk for lk in links if lk.ok is False]
-            pics = [lk for lk in links if lk.kind == "image"]
-            notes, parts = [], []
-            if dead:
-                log(f"[web] {char.name} tried to post dead link(s): {', '.join(lk.url[:80] for lk in dead)}")
-                notes.append("These links don't work, so they can't be posted: "
-                             + "; ".join(f"{lk.url} ({lk.reason})" for lk in dead) + ". Leave them out"
-                             + (", or use web_search to find a real one." if can_search else "."))
-            if pics:
-                log(f"[web] showing {char.name} the image link(s) it wants to post")
-                notes.append("Below is what your image link(s) actually show. If a picture is what you meant, "
-                             "keep its link; if not, change or remove it.")
-                for lk in pics:
-                    parts += [{"type": "text", "text": lk.url}, {"type": "image_url", "image_url": {"url": lk.image}}]
-            return " ".join(notes) or None, parts
-
-        async def finalize(text):
-            for u in links_in(text):
-                if (await check(u)).ok is False:
-                    log(f"[web] removed a dead link from {char.name}'s message: {u[:100]}")
-                    text = remove_link(text, u)
-            return text
-
-        return review, finalize
-
-    async def _describe_page(self, link):
-        """Have the loaded model sum up a linked page; falls back to the first lines of its text."""
-        llm, lc = self.core.llm, self.cfg["llm"]
-        if not llm.ready or not link.text.strip():
-            return preview(link)
-        room = max(2000, min(16000, (int(lc["ctx_size"]) - int(lc["max_tokens"]) - 600) * 3))
-        msgs = [{"role": "system", "content":
-                 "You describe web pages for people in a chat who haven't opened them. In 2-4 plain sentences, "
-                 "say what the page is and what it actually contains (key facts, names, numbers, the gist of "
-                 "an article). No preamble, no opinions."},
-                {"role": "user", "content": f"URL: {link.url}\nTitle: {link.title}\n\n{link.text[:room]}"}]
-        try:
-            reply = await llm.chat(msgs)
-        except Exception as e:
-            log(f"[web] couldn't describe {link.url[:80]}: {e}", level="warn")
-            return preview(link)
-        text = THINK_RE.sub("", reply.get("content") or "")
-        text = re.sub(r"\s+", " ", text.split("</think>")[-1]).strip()
-        if not text:
-            return preview(link)
-        log(f"[web] described {link.url[:80]}: {text[:100]}")
-        return f"[link {link.url}: {link.title or 'web page'} — {text[:700]}]"
 
     async def _hear_voice_messages(self, message):
         """Discord voice messages (Ogg Opus attachments) -> "[voice message] what was said"."""
@@ -645,13 +540,6 @@ class CharacterBot(discord.Client):
             log(f"[voice] {message.author.display_name}'s voice message: {said or '(nothing)'}")
             out.append(f"[voice message] {said}" if said else "[voice message with no speech]")
         return "\n".join(out)
-
-    def _witness(self, channel_id, entry):
-        for info in self.present(channel_id).values():
-            self.core.memory.add(info["name"], entry)
-        rec = self.recent.setdefault(channel_id, [])
-        rec.append(entry)
-        del rec[:-30]
 
     async def _backfill(self, channel, char_name):
         n = int(self.behavior["backfill_messages"])
@@ -721,103 +609,6 @@ class CharacterBot(discord.Client):
         self._witness(payload.channel_id, ev)
         # reactions are seen but never trigger a reply
 
-    # ---- turn taking --------------------------------------------------------
-    def schedule(self, channel, force=None):
-        cid = channel.id
-        if self.phase.get(cid) == "generating":
-            self.followup[cid] = force or self.followup.get(cid) or True
-            return
-        t = self.tasks.get(cid)
-        if t and not t.done():
-            # inherit a forced speaker only from a turn that is still waiting to speak
-            force = force or getattr(t, "forced", None)
-            t.cancel()
-        task = asyncio.create_task(self._run_turn(channel, force))
-        task.forced = force
-        self.tasks[cid] = task
-
-    async def _run_turn(self, channel, force):
-        cid = channel.id
-        try:
-            self.phase[cid] = "waiting"
-            await asyncio.sleep(float(self.behavior["response_delay"]))
-            asyncio.current_task().forced = None  # this turn is being used up now
-            speaker = force or self.pick_responder(cid)
-            if not speaker or self._spoke_last(cid, speaker):
-                return
-            self.phase[cid] = "generating"
-            async with self.gen_lock:
-                await self.respond(channel, speaker)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            log(f"[discord] error while responding: {e!r}")
-        finally:
-            if self.tasks.get(cid) is asyncio.current_task():
-                self.phase.pop(cid, None)
-                self.tasks.pop(cid, None)
-                nxt = self.followup.pop(cid, None)
-                if nxt:
-                    self.schedule(channel, force=nxt if isinstance(nxt, str) else None)
-
-    def _spoke_last(self, cid, speaker):
-        """A character never answers itself: skip if the newest entry is its own message."""
-        rec = self.recent.get(cid) or []
-        last = rec[-1] if rec else None
-        return bool(last and last.kind == "msg" and last.char_name
-                    and last.char_name.lower() == speaker.lower())
-
-    def pick_responder(self, cid):
-        present = [i["name"] for i in self.present(cid).values()]
-        rec = [e for e in self.recent.get(cid, []) if e.kind == "msg"]
-        if not present or not rec:
-            return None
-        last = rec[-1]
-        candidates = [n for n in present if not (last.char_name and n.lower() == last.char_name.lower())]
-        if not candidates:
-            return None
-        # replying directly to a character's message
-        if last.reply_ref:
-            parent = self.core.memory.by_ref.get(last.reply_ref)
-            if parent and parent.char_name and parent.char_name in candidates:
-                if not last.char_name or self._chain_ok(rec):
-                    return parent.char_name
-        mentioned = self._mentioned(last.text, candidates)
-        if last.char_name:  # character-to-character
-            if not self._chain_ok(rec):
-                return None
-            if mentioned:
-                return mentioned
-            if random.random() < float(self.behavior["bot_reply_chance"]):
-                return random.choice(candidates)
-            return None
-        if mentioned:
-            return mentioned
-        if len(candidates) == 1:
-            return candidates[0]
-        for e in reversed(rec):  # whoever has been talking most recently keeps the thread
-            if e.char_name and e.char_name in candidates:
-                return e.char_name
-        return random.choice(candidates)
-
-    def _chain_ok(self, rec):
-        chain = 0
-        for e in reversed(rec):
-            if not e.char_name:
-                break
-            chain += 1
-        return chain < int(self.behavior["max_bot_chain"])
-
-    @staticmethod
-    def _mentioned(text, names):
-        best, pos = None, None
-        low = (text or "").lower()
-        for n in names:
-            m = re.search(r"\b" + re.escape(n.lower()) + r"\b", low)
-            if m and (pos is None or m.start() < pos):
-                best, pos = n, m.start()
-        return best
-
     @property
     def local_voice(self):
         return bool(self.cfg["voice"].get("local_tts"))
@@ -825,38 +616,6 @@ class CharacterBot(discord.Client):
     def can_speak(self, char):
         """With the local voice everyone can talk (there's a default voice); ElevenLabs needs a voice per character."""
         return self.local_voice or bool(char.voice)
-
-    # ---- generation ---------------------------------------------------------
-    def tool_on(self, name):
-        """The command's switch on the Behavior page, plus what it needs to work."""
-        if not self.cfg["tools"].get(name, True):
-            return False
-        if name == "post_gif":
-            return bool(self.cfg["gifs"].get("klipy_key"))
-        if name == "draw_image":
-            return not self.core.draw.paused_by
-        return True
-
-    def tools_for(self, voice=False):
-        # in voice chat nothing can be shown, so reactions, pictures and GIFs are left out
-        return tool_list(self.tool_on, exclude=("add_reaction", "view_profile_picture", "draw_image", "post_gif")
-                         if voice else ())
-
-    # ---- context meter -------------------------------------------------------
-    def note_usage(self, char_name):
-        """Remember the real size (from llama-server) of the character's biggest call this turn."""
-        if self.core.llm.peak_tokens:
-            self.context_used[char_name.lower()] = (self.core.llm.peak_tokens, time.time())
-
-    def context_estimate(self, channel, char):
-        """Tokens the character's next prompt would take right now (estimate, nothing is trimmed)."""
-        b, lc = self.behavior, self.cfg["llm"]
-        tools = self.tools_for()
-        system = self._system_prompt(channel, char, tools=tools)
-        budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256 - tools_tokens(tools)
-        msgs = self.core.memory.build_messages(char.name, system, channel.id, budget, int(b["image_token_cost"]),
-                                               int(b["max_images_in_context"]), dry_run=True)
-        return self.core.memory.count_tokens(msgs, int(b["image_token_cost"])) + tools_tokens(tools)
 
     def context_report(self, channel_id=None):
         """[(character, channel name, next prompt estimate, last real usage or None, context size)]."""
@@ -870,7 +629,7 @@ class CharacterBot(discord.Client):
                 char = self.core.characters.get(info["name"])
                 if not ch or not char:
                     continue
-                last = self.context_used.get(char.name.lower())
+                last = self.core.context_used.get(char.name.lower())
                 out.append((char.name, ch.name, self.context_estimate(ch, char), last[0] if last else None, size))
         return out
 
@@ -885,69 +644,6 @@ class CharacterBot(discord.Client):
                          + (f" · last reply used {last:,}" if last else ""))
         lines.append("-# Older messages are dropped automatically when it's full; notes are kept.")
         await interaction.response.send_message("\n".join(lines)[:1990])
-
-    def _system_prompt(self, channel, char, present=None, tools=None):
-        tools = self.tools_for() if tools is None else tools
-        names = {t["function"]["name"] for t in tools}
-        native = self.cfg["llm"].get("use_native_tools", True)
-        hints = [h for cmd, h in COMMAND_HINTS if cmd in names]
-        commands = COMMAND_LINES.format(hints=", ".join(hints) or "whenever useful") if names else ""
-        notebook = ""
-        if names & {"read_note", "write_note"}:
-            write = " Write down what's worth remembering as soon as you learn it." if "write_note" in names else ""
-            notebook = NOTEBOOK_LINE.format(write=write, notes=Notebook(char.key).list())
-        return SYSTEM_RULES.format(
-            name=char.name, prompt=char.prompt.strip(), channel=channel.name, guild=channel.guild.name,
-            present=", ".join(present or [i["name"] for i in self.present(channel.id).values()]),
-            commands=commands, notebook=notebook,
-            pfp=" (and profile pictures, via the command)" if "view_profile_picture" in names else "",
-            tool_text="" if native or not tools else "\n" + tool_text_instructions(tools))
-
-    async def respond(self, channel, speaker):
-        info = self.present(channel.id).get(speaker.lower())
-        char = self.core.characters.get(speaker)
-        if not info or not char:
-            return
-        llm = self.core.llm
-        if not llm.ready:
-            why = f"suspended while {llm.suspended_by} is running" if llm.suspended_by else "not loaded"
-            log(f"[discord] {speaker} can't reply: model {why}")
-            return
-        b, lc = self.behavior, self.cfg["llm"]
-        budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256
-        tools = self.tools_for()
-        system = self._system_prompt(channel, char, tools=tools)
-        budget -= tools_tokens(tools)
-        msgs = self.core.memory.build_messages(char.name, system, channel.id, budget,
-                                               int(b["image_token_cost"]), int(b["max_images_in_context"]))
-        log(f"[discord] {char.name} is thinking in #{channel.name} ({len(msgs) - 1} context entries)")
-
-        typing = asyncio.create_task(self._typing(channel)) if b.get("typing_indicator") else None
-        review, finalize = self._link_checker(char, tools) if b.get("check_links", True) else (None, None)
-        llm.peak_tokens = 0
-        try:
-            res = await run_turn(llm, msgs, tools, char.name,
-                                 on_react=lambda a: self._react(channel, char.name, a),
-                                 on_pfp=lambda name: self._profile_picture(channel, name),
-                                 handlers=self._local_tools(char, channel, info), review=review,
-                                 decide=bool(b.get("decide_commands", True) and lc.get("use_native_tools", True)))
-            if finalize and res.text:
-                res.text = await finalize(res.text)
-        finally:
-            if typing:
-                typing.cancel()
-            self.note_usage(char.name)
-
-        self._remember_actions(char, channel.id, channel.name, res)
-        if res.silent:
-            log(f"[discord] {char.name} chose to stay silent")
-        elif res.text:
-            await self._send(channel, info, char, res.text)
-        if res.leave:
-            await self.remove_character(channel, char.name, f"{char.name} decided to leave #{channel.name}.")
-            await self.announce(channel, f"👋 **{char.name}** left the channel.")
-        if self.core.memory.dirty:
-            self.core.memory.save()
 
     async def _send(self, channel, info, char, text="", file=None):
         wh = discord.Webhook.from_url(info["webhook_url"], client=self)
@@ -976,18 +672,8 @@ class CharacterBot(discord.Client):
         except discord.HTTPException as e:
             log(f"[discord] couldn't post in #{getattr(channel, 'name', '?')}: {e}")
 
-    def _remember_actions(self, char, channel_id, channel_name, res):
-        """Commands leave no trace in the chat history, so the model would only ever see itself
-        talking. Recording them (privately) shows it that it really uses its commands."""
-        mem = self.core.memory
-        for name, args in res.actions:
-            what = describe_action(name, args)
-            if what:
-                mem.add(char.name, mem.new_entry(kind="event", channel_id=channel_id, channel_name=channel_name,
-                                                 text=f"{char.name} {what}."))
-
     @staticmethod
-    async def _typing(channel):
+    async def _typing(channel, char=None):
         """Discord shows "typing…" for ~10 s per signal and only clears it early when the bot account
         itself posts, which webhook replies don't count as. Refresh rarely (not every 5 s like
         discord.py) so the indicator fades as soon as possible after the reply."""
@@ -998,58 +684,8 @@ class CharacterBot(discord.Client):
         except (discord.HTTPException, asyncio.CancelledError):
             pass
 
-    def _local_tools(self, char, channel=None, info=None):
-        """`channel`/`info` (the webhook) are needed for commands that post something."""
-        nb = Notebook(char.key)
-        drawn = []
-
-        async def draw(args):
-            prompt = str(args.get("prompt") or "").strip()
-            if not prompt:
-                return "Say what to draw."
-            if drawn:
-                return "You already drew a picture this turn."
-            drawn.append(prompt)
-            log(f"[draw] {char.name} is drawing: {prompt[:100]}")
-            try:
-                png = await self.core.draw.draw(self.http_session, prompt)
-            except DrawError as e:
-                log(f"[draw] {char.name} couldn't draw: {e}", level="warn")
-                return f"Drawing failed: {e}. Tell them you couldn't draw it right now."
-            await self._send(channel, info, char, file=discord.File(io.BytesIO(png), "drawing.png"))
-            seen = encode_image(png, int(self.behavior["max_image_side"]))
-            note = "[system] Your drawing was posted in the chat. This is what it looks like:"
-            return [{"type": "text", "text": note}, {"type": "image_url", "image_url": {"url": seen}}] \
-                if seen else "Your drawing was posted in the chat."
-
-        async def gif(args):
-            q = str(args.get("query") or "").strip()
-            try:
-                url, title = await search_gif(self.http_session, self.cfg["gifs"].get("klipy_key"), q)
-            except GifError as e:
-                log(f"[gifs] {char.name} couldn't post a GIF: {e}", level="warn")
-                return f"No GIF posted: {e}."
-            log(f"[gifs] {char.name} posted a GIF for {q!r}")
-            await self._send(channel, info, char, url)
-            return f'Posted a GIF ("{title}").'
-
-        def logged(fn, what):
-            def run(args):
-                out = fn(args)
-                log(f"[notes] {char.name} {what}: {out.splitlines()[0][:80]}")
-                return out
-            return run
-        async def search(args):
-            log(f"[web] {char.name} searched for {args.get('query')!r}")
-            return await web_search(args.get("query"))
-
-        async def read_page(args):
-            log(f"[web] {char.name} read {str(args.get('url'))[:100]}")
-            return await read_webpage(self.http_session, args.get("url"))
-
-        return {"get_current_time": current_time, "read_note": nb.read, "write_note": logged(nb.write, "wrote"),
-                "web_search": search, "read_webpage": read_page,
-                **({"draw_image": draw, "post_gif": gif} if channel and info else {})}
+    async def post_file(self, channel, info, char, name, data):
+        await self._send(channel, info, char, file=discord.File(io.BytesIO(data), name))
 
     async def _react(self, channel, char_name, args):
         """Returns a result line for the tool loop."""

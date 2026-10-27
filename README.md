@@ -5,7 +5,7 @@ A local AI character bot for Discord. A Qwen vision model (GGUF) runs through ll
 ## Setup
 
 1. **Python 3.10+.** Double-click `run.bat`. On first run it creates `.venv` and installs the requirements.
-2. **Model.** You need a Qwen-VL GGUF *and* its matching `mmproj-*.gguf` vision projector, for example from the `ggml-org/Qwen2.5-VL-7B-Instruct-GGUF` or `Qwen3-VL` repos on Hugging Face. Select both files under **Model**, then click **Load**. You don't need to install llama.cpp yourself (see below).
+2. **Model.** The easiest way is **Model → Choose a model…** (see below): it lists vision models that work with the app, marks which ones fit your graphics card, and downloads the one you pick. You can also bring your own: a vision GGUF *and* its matching `mmproj-*.gguf` projector, selected under **Model**. Then click **Load**. You don't need to install llama.cpp yourself (see below).
 3. **Discord bot.** Do this in https://discord.com/developers/applications:
    - Create an application, then a bot, and copy its token into **Discord → Bot token**.
    - Under *Bot → Privileged Gateway Intents*, enable **MESSAGE CONTENT INTENT**.
@@ -43,6 +43,29 @@ llama.cpp is managed automatically. The first time you click **Load** (or **Inst
 - With **Update on startup** on, the app checks for a newer build each time it starts and installs it into a new folder while the current one keeps running. It then restarts the model on the new build and deletes the old one.
 - If you'd rather use your own build, set **Advanced → Custom llama-server**. While that's set, the managed install is ignored.
 
+## Choosing a model
+
+**Model → Choose a model…** opens a built-in list of vision models (Qwen3-VL 2B–32B, Gemma 3, Mistral Small 3.2, plus abliterated versions), each tagged:
+
+- `uncensored`: refusals removed, so characters stay in their role.
+- `fast`: replies quickly even on small GPUs.
+- `smart`: follows long character prompts and commands well.
+- `MoE`: big-model knowledge at small-model speed.
+- `official`: from the original authors.
+
+Each entry shows how much VRAM it needs with your current context size and context memory type (the model file, its projector, the context, and about 0.8 GB of working memory), and whether that **fits**, is **tight** or is **too big** for your card. The card's VRAM is read with `nvidia-smi`; for other GPUs, type it in. The best model that fits is marked ★ **Recommended**. **Download & use** fetches the model and its projector from Hugging Face into **Download folder** (one subfolder per repository) and makes it the model that loads; a loaded model is restarted on it. Stopped downloads continue where they left off. The progress shows under **Model files**.
+
+## Local chat
+
+The **Chat** page is a channel inside the app (`#local-chat`), for talking to characters without Discord. Characters behave as they do on Discord, with the same prompt, memory (it shows up as `#local-chat` in their history), notebook and turn-taking. Characters can talk to each other there too.
+
+- **+ Summon** adds a character; ✕ next to a name dismisses it. **Send everyone home**, **Forget everything** and **Clear the chat** are next to them. Typing `/summon <name>`, `/dismiss <name|all>`, `/gohome`, `/forget`, `/who` or `/clear` works too. Clearing only empties the window; memories stay.
+- Messages use Discord markdown: `**bold**`, `*italic*`, `__underline__`, `~~strike~~`, `` `code` ``, code blocks, `> quotes`, `# headings`, `-# small text`, lists, `||spoilers||` (click to reveal) and links.
+- **+** attaches pictures or files. Ctrl+V pastes a picture, or files copied in Explorer. Pictures show as previews; click one for full size. Characters see the pictures, and they read small text files (up to 6,000 characters). Clicking a file opens it in a viewer with **Save as…** and **Open with…**.
+- Commands that need Discord are left out: reactions, profile pictures and GIFs. Drawing and `create_file` work, and their pictures and files appear in the chat.
+- There's no voice in the local chat. Voice chat is Discord-only.
+- `//text` is out of character, as on Discord. **Your name** sets the name characters see (default: your Windows user name). The chat and its attachments are saved in `localchat/`.
+
 ## Characters
 
 Each character is a JSON file in `characters/`:
@@ -69,7 +92,7 @@ You can create and edit characters in the **Characters** page, which copies the 
 - `/summon <character>`: creates a webhook with the character's name and avatar, reads recent channel history and greets the channel.
 - `/dismiss <character|all>`: removes the character and deletes its webhook.
 - `/gohome`: dismisses every character in the channel (same as `/dismiss all`).
-- `/forget`: wipes the chat memory of every character in the channel. Their notes are kept.
+- `/forget`: sends every character in the channel home (like `/gohome`), then wipes their chat memory. This way, their leave message isn't the first thing they remember afterwards. Their notes are kept.
 - `/who`: shows which characters are in the channel (and who is in voice chat), visible to everyone.
 - `/context`: shows how full each character's context is in this channel. You get a bar and the estimated size of its next prompt out of the model's limit, plus the real size of its last reply, as reported by llama-server. The **Dashboard** has the same meter for every summoned character, updated every few seconds.
 - `/characters`: lists who is in the channel and who is available, with their descriptions. 🔊 marks characters that can join voice chat.
@@ -91,8 +114,9 @@ Characters can also act through MCP-style tool calls (OpenAI tool schemas, which
 | `read_note(name)`, `write_note(name, text, mode)` | The character's personal Markdown notebook in `notes/<character>/`. `mode` is append (default), replace or delete; the list of notes is already in the prompt |
 | `draw_image(prompt)` | Draw a picture with Stable Diffusion and post it; the character sees the result (off by default, see Drawing) |
 | `post_gif(query)` | Post the best-matching GIF from KLIPY (needs a KLIPY key) |
+| `create_file(filename, about)` | Make a file and post it as an attachment: code, a story, a list, CSV data and so on. The character only names the file and says what goes in it; the contents are then written in a separate model call (up to **Longest file**, 4,000 tokens by default), so files can be much longer than a chat message. Only the endings listed under **Behavior → File types characters can create** are allowed, and the character is told which. A copy is kept in `files/<character>/`. This is separate from the notebook, which is the character's private memory |
 
-Every command has its own switch under **Behavior → Commands**. The system prompt only mentions commands that are switched on. In voice chat, reactions, profile pictures, drawings and GIFs are left out.
+Every command has its own switch under **Behavior → Commands**. The system prompt only mentions commands that are switched on. In voice chat, reactions, profile pictures, drawings, GIFs and files are left out.
 
 Before each reply in text chat, the model is asked whether a command fits right now. It must call at least one command, or `just_reply`. This costs one extra model call per reply and can be turned off under **Behavior → Ask about commands before each reply**. If the server can't force a tool call, the step switches itself off. Every command a character runs is logged as `[tools] Name used command(...)`.
 
@@ -131,6 +155,8 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 | `state.json` | Which characters are summoned where, and their webhooks |
 | `memory.json` | Character memories (text only) |
 | `notes/` | Each character's notes |
+| `files/` | Copies of the files characters made with `create_file` |
+| `localchat/` | The local chat's messages (`chat.json`) and attachments |
 | `llama.cpp/` | Managed llama.cpp build and its `installed.json` manifest |
 | `models/whisper/` | Whisper speech-recognition model (unless you set another folder) |
 | `app/` | Source: `bot.py` (Discord), `voice.py` (voice chat), `stt.py` (Whisper), `tts.py` (ElevenLabs and Kokoro), `web.py` (search), `draw.py` (Stable Diffusion WebUI), `gifs.py` (KLIPY), `engine.py` (llama.cpp installer), `llm.py` (llama-server process), `memory.py` (context), `games.py`, `gui.py` |

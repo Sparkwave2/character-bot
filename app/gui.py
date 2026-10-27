@@ -7,9 +7,10 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageGrab
 
 from .characters import Character, slug
+from .chatview import ChatView
 from .config import CHARACTERS_DIR
 from .cropper import CropDialog, load_image
 from .draw import SDXL_MIN_BYTES, list_checkpoints
@@ -17,6 +18,7 @@ from .engine import resolve_backend
 from .games import running_process_names
 from .llm import VERBOSE_LOG
 from .log import log, log_queue
+from .models import CATALOG, TAGS, downloaded, fit, local_paths, recommended
 from .tools import TOOL_LABELS, TOOL_NAMES
 from .tts import KOKORO_VOICES, VOICE_KINDS, kokoro_label
 
@@ -123,7 +125,7 @@ class App(ctk.CTk):
         self.content.grid_rowconfigure(0, weight=1)
 
         self.pages = {}
-        for name, builder in [("Dashboard", self.page_dashboard), ("Model", self.page_model),
+        for name, builder in [("Dashboard", self.page_dashboard), ("Chat", self.page_chat), ("Model", self.page_model),
                               ("Discord", self.page_discord), ("Characters", self.page_characters),
                               ("Voice", self.page_voice), ("Drawing", self.page_drawing),
                               ("Games", self.page_games),
@@ -146,7 +148,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(bar, text="◆ Character Bot", font=ctk.CTkFont(size=18, weight="bold")).pack(
             anchor="w", padx=20, pady=(24, 28))
         self.nav = {}
-        icons = {"Dashboard": "◉", "Model": "⚙", "Discord": "✉", "Characters": "☺",
+        icons = {"Dashboard": "◉", "Chat": "❖", "Model": "⚙", "Discord": "✉", "Characters": "☺",
                  "Voice": "♪", "Drawing": "✎", "Games": "▶", "Behavior": "≡", "Logs": "☰"}
         for name, icon in icons.items():
             b = ctk.CTkButton(bar, text=f"  {icon}   {name}", anchor="w", height=40, corner_radius=10,
@@ -252,6 +254,208 @@ class App(ctk.CTk):
             "4. In Discord use /summon <character> and /dismiss <character>.")).grid(
             row=1, column=0, sticky="w", padx=16, pady=(6, 16))
 
+    # ---- local chat ---------------------------------------------------------
+    def page_chat(self, f):
+        self.header(f, "Chat", "A channel of your own: summon characters and talk to them without Discord")
+        f.grid_rowconfigure(2, weight=1)
+        body = ctk.CTkFrame(f, fg_color=BG)
+        body.grid(row=2, column=0, sticky="nsew", padx=32, pady=(14, 18))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        lc = self.core.localchat
+
+        main = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
+        main.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(0, weight=1)
+        self.chat_view = ChatView(main, self._chat_avatar)
+        self.chat_view.grid(row=0, column=0, sticky="nsew", padx=2, pady=(2, 0))
+        self.chat_typing = ctk.CTkLabel(main, text="", text_color=MUTED, anchor="w", height=18,
+                                        font=ctk.CTkFont(size=11, slant="italic"))
+        self.chat_typing.grid(row=1, column=0, sticky="ew", padx=18)
+        self.chat_pending_row = ctk.CTkFrame(main, fg_color="transparent", height=1)
+        self.chat_pending_row.grid(row=2, column=0, sticky="ew", padx=12)
+        self.chat_pending_row.grid_remove()       # shown while something is attached
+        inp = ctk.CTkFrame(main, fg_color=CARD, corner_radius=10)
+        inp.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 12))
+        inp.grid_columnconfigure(1, weight=1)
+        ctk.CTkButton(inp, text="+", width=36, height=36, corner_radius=18, fg_color=BORDER, hover_color=ACCENT,
+                      font=ctk.CTkFont(size=18), command=self._chat_attach).grid(row=0, column=0, padx=8, pady=8)
+        self.chat_input = ctk.CTkTextbox(inp, height=44, fg_color=CARD, border_width=0, wrap="word",
+                                         font=ctk.CTkFont(size=13))
+        self.chat_input.grid(row=0, column=1, sticky="ew", pady=6)
+        self.chat_input.bind("<Return>", self._chat_enter)
+        self.chat_input.bind("<Control-v>", self._chat_paste)
+        self.button(inp, "Send", self._chat_send, width=70).grid(row=0, column=2, padx=8)
+        ctk.CTkLabel(main, text="Enter sends · Shift+Enter new line · Ctrl+V pastes pictures · "
+                                "//text is out of character · /summon /dismiss /gohome /forget /clear",
+                     text_color=MUTED, font=ctk.CTkFont(size=10)).grid(row=4, column=0, sticky="w", padx=18,
+                                                                       pady=(0, 8))
+
+        side = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER, width=240)
+        side.grid(row=0, column=1, sticky="nsew")
+        side.grid_propagate(False)
+        side.grid_columnconfigure(0, weight=1)
+        side.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(side, text=f"# {lc.channel.name}", font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=16, pady=(14, 6))
+        self.button(side, "+ Summon", self._chat_summon).grid(row=1, column=0, sticky="ew", padx=12)
+        self.chat_members = ctk.CTkScrollableFrame(side, fg_color="transparent")
+        self.chat_members.grid(row=2, column=0, sticky="nsew", padx=4, pady=8)
+        for i, (text, cmd) in enumerate([("Send everyone home", "gohome"), ("Forget everything", "forget"),
+                                         ("Clear the chat", "clear")]):
+            self.button(side, text, lambda c=cmd: self._chat_command(c), primary=False).grid(
+                row=3 + i, column=0, sticky="ew", padx=12, pady=(0, 6))
+        ctk.CTkLabel(side, text="Your name", text_color=MUTED, anchor="w").grid(row=6, column=0, sticky="w",
+                                                                                padx=16, pady=(8, 0))
+        self.chat_name = tk.StringVar(value=self.cfg["localchat"].get("user_name") or lc.user_name)
+        name = ctk.CTkEntry(side, textvariable=self.chat_name, height=32, fg_color=CARD, border_color=BORDER)
+        name.grid(row=7, column=0, sticky="ew", padx=12, pady=(2, 14))
+        name.bind("<FocusOut>", lambda e: self._chat_set_name())
+        name.bind("<Return>", lambda e: self._chat_set_name())
+        self.chat_pending, self.chat_thumbs = [], []
+        self.chat_shown, self.chat_cleared, self.chat_member_names = 0, None, None
+
+    def _chat_avatar(self, name, is_char):
+        ch = self.core.characters.get(name) if is_char else None
+        return ch.avatar_path() if ch else None
+
+    def _chat_set_name(self):
+        name = self.chat_name.get().strip()
+        if name != self.cfg["localchat"].get("user_name"):
+            self.cfg["localchat"]["user_name"] = name
+            self.cfg.save()
+
+    def _chat_enter(self, event):
+        if event.state & 0x1:          # Shift+Enter: a new line
+            return None
+        self._chat_send()
+        return "break"
+
+    def _chat_send(self):
+        text = self.chat_input.get("1.0", "end").strip()
+        files, self.chat_pending = self.chat_pending, []
+        if not text and not files:
+            return
+        self.chat_input.delete("1.0", "end")
+        self._chat_refresh_pending()
+        self.core.submit(self.core.localchat.send(text, files))
+
+    def _chat_command(self, cmd, arg=""):
+        if cmd == "forget" and not messagebox.askyesno(
+                "Forget everything", "Send everyone home and wipe their memory?"):
+            return
+        self.core.submit(self.core.localchat.command(cmd, arg))
+
+    def _chat_attach(self):
+        paths = filedialog.askopenfilenames(filetypes=[
+            ("Pictures and files", "*.png *.jpg *.jpeg *.webp *.gif *.bmp *.txt *.md *.py *.json *.csv *.*")])
+        for p in paths:
+            try:
+                with open(p, "rb") as fh:
+                    data = fh.read(25_000_001)
+            except OSError as e:
+                messagebox.showerror("Attach", f"Couldn't read {p}:\n{e}")
+                continue
+            if len(data) > 25_000_000:
+                messagebox.showerror("Attach", f"{os.path.basename(p)} is bigger than 25 MB.")
+                continue
+            self.chat_pending.append((os.path.basename(p), data))
+        self._chat_refresh_pending()
+
+    def _chat_paste(self, event):
+        clip = ImageGrab.grabclipboard()
+        if isinstance(clip, Image.Image):
+            buf = io.BytesIO()
+            clip.save(buf, "PNG")
+            self.chat_pending.append(("pasted.png", buf.getvalue()))
+        elif isinstance(clip, list) and clip:      # files copied in Explorer
+            for p in clip:
+                if os.path.isfile(p):
+                    with open(p, "rb") as fh:
+                        self.chat_pending.append((os.path.basename(p), fh.read()))
+        else:
+            return None                           # ordinary text paste
+        self._chat_refresh_pending()
+        return "break"
+
+    def _chat_refresh_pending(self):
+        for w in self.chat_pending_row.winfo_children():
+            w.destroy()
+        self.chat_thumbs = []
+        if self.chat_pending:
+            self.chat_pending_row.grid()
+        else:
+            self.chat_pending_row.grid_remove()
+        for i, (name, data) in enumerate(self.chat_pending):
+            cell = ctk.CTkFrame(self.chat_pending_row, fg_color=CARD, corner_radius=8)
+            cell.pack(side="left", padx=4, pady=4)
+            try:
+                im = Image.open(io.BytesIO(data))
+                im.thumbnail((72, 72))
+                img = ctk.CTkImage(im.convert("RGBA"), size=im.size)
+                self.chat_thumbs.append(img)
+                ctk.CTkLabel(cell, text="", image=img).pack(side="left", padx=6, pady=6)
+            except Exception:
+                ctk.CTkLabel(cell, text=f"📄 {name[:24]}").pack(side="left", padx=8, pady=6)
+            ctk.CTkButton(cell, text="✕", width=24, height=24, fg_color="transparent", hover_color="#3a1f29",
+                          text_color=BAD, command=lambda n=i: self._chat_unattach(n)).pack(side="left", padx=(0, 4))
+
+    def _chat_unattach(self, i):
+        del self.chat_pending[i]
+        self._chat_refresh_pending()
+
+    def _chat_summon(self):
+        here = self.core.localchat.members
+        chars = [c for c in self.core.characters.characters.values() if c.name.lower() not in here]
+        if not chars:
+            messagebox.showinfo("Summon", "Every character is already here." if here else "Create a character first.")
+            return
+        win = ctk.CTkToplevel(self, fg_color=BG)
+        win.title("Summon a character")
+        win.geometry("420x520")
+        win.transient(self)
+        win.after(100, win.grab_set)
+        lst = ctk.CTkScrollableFrame(win, fg_color=PANEL)
+        lst.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def choose(name):
+            win.destroy()
+            self.core.submit(self.core.localchat.summon(name))
+        for c in chars:
+            img = circle_image(c.avatar_path(), 32) if c.avatar_path() else circle_image(None, 32)
+            text = f"  {c.name}" + (f"\n  {c.description[:60]}" if c.description else "")
+            ctk.CTkButton(lst, text=text, image=img, anchor="w", height=48, fg_color="transparent", hover_color=CARD,
+                          text_color="#e6e8ef", command=lambda n=c.name: choose(n)).pack(fill="x", padx=4, pady=2)
+
+    def _refresh_chat(self):
+        lc = self.core.localchat
+        if lc.cleared != self.chat_cleared:
+            self.chat_cleared, self.chat_shown = lc.cleared, 0
+            self.chat_view.clear()
+        msgs = lc.messages
+        for msg in msgs[self.chat_shown:]:
+            self.chat_view.add(msg)
+        self.chat_shown = len(msgs)
+        typing = lc.typing
+        self.chat_typing.configure(text=f"{typing} is typing…" if typing else "")
+        names = [i["name"] for i in lc.members.values()]
+        if names == self.chat_member_names:
+            return
+        self.chat_member_names = names
+        for w in self.chat_members.winfo_children():
+            w.destroy()
+        if not names:
+            ctk.CTkLabel(self.chat_members, text="Nobody here yet.", text_color=MUTED).pack(anchor="w", padx=12)
+        for n in names:
+            c = self.core.characters.get(n)
+            img = circle_image(c.avatar_path() if c and c.avatar_path() else None, 28)
+            row = ctk.CTkFrame(self.chat_members, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text="  " + n, image=img, compound="left", anchor="w").pack(side="left", padx=6)
+            ctk.CTkButton(row, text="✕", width=26, height=26, fg_color="transparent", hover_color="#3a1f29",
+                          text_color=BAD, command=lambda x=n: self._chat_command("dismiss", x)).pack(side="right")
+
     # ---- model --------------------------------------------------------------
     def page_model(self, f):
         s = self.scroll_page(f)
@@ -263,7 +467,21 @@ class App(ctk.CTk):
         self.model_fields = [
             Field(c, self.cfg, "llm", "model_path", "Model GGUF", "file", "e.g. Qwen2.5-VL-7B-Instruct-Q4_K_M", gguf, row=1),
             Field(c, self.cfg, "llm", "mmproj_path", "Vision projector", "file", "mmproj-*.gguf (needed for images)", gguf, row=3),
+            Field(c, self.cfg, "llm", "models_dir", "Download folder", "dir",
+                  "Where Choose a model saves; empty = models in the app folder", row=5),
         ]
+        bar = ctk.CTkFrame(c, fg_color="transparent")
+        bar.grid(row=7, column=0, columnspan=3, sticky="w", padx=12, pady=(14, 0))
+        self.button(bar, "Choose a model…", self.pick_model, width=150).pack(side="left", padx=4)
+        self.button(bar, "Cancel download", self.core.downloader.cancel, primary=False, width=140).pack(
+            side="left", padx=4)
+        self.dl_bar = ctk.CTkProgressBar(c, progress_color=ACCENT, fg_color=CARD, height=8)
+        self.dl_bar.set(0)
+        self.dl_bar.grid(row=8, column=0, columnspan=3, sticky="ew", padx=16, pady=(12, 0))
+        self.dl_msg = ctk.CTkLabel(c, text="Suggests models that fit your graphics card and downloads them for you.",
+                                   text_color=MUTED, anchor="w")
+        self.dl_msg.grid(row=9, column=0, columnspan=3, sticky="w", padx=16, pady=(2, 14))
+        self.dl_model_path = self.cfg["llm"]["model_path"]
         c = self.card(s, 4, "Runtime")
         specs = [("ctx_size", "Context size", "int", "Tokens; history scrolls to fit"),
                  ("kv_cache", "Context memory type", "str", "q8_0 = half the VRAM of f16; q4_0 = a quarter"),
@@ -292,6 +510,110 @@ class App(ctk.CTk):
         bar.grid(row=7, column=0, sticky="w", padx=32, pady=20)
         self.button(bar, "Save", lambda: self.save_fields(self.model_fields), width=110).pack(side="left", padx=(0, 8))
         self.button(bar, "Save & reload model", self._reload_model, primary=False, width=170).pack(side="left")
+
+    def pick_model(self):
+        """The built-in model list, marked by whether each one fits this GPU's VRAM."""
+        self.cfg["llm"]["models_dir"] = self.model_fields[2].var.get().strip()
+        lc, hw = self.cfg["llm"], self.core.engine.hw or {}
+        win = ctk.CTkToplevel(self, fg_color=BG)
+        win.title("Choose a model")
+        win.geometry("820x660")
+        win.transient(self)
+        win.after(100, win.grab_set)
+        top = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=12)
+        top.pack(fill="x", padx=12, pady=(12, 6))
+        gpu = hw.get("gpu_name") or "Your graphics card"
+        ctk.CTkLabel(top, text=gpu, font=ctk.CTkFont(size=15, weight="bold")).grid(row=0, column=0, sticky="w",
+                                                                                 padx=14, pady=(10, 0))
+        ctk.CTkLabel(top, text="VRAM (GB)", text_color=MUTED).grid(row=0, column=1, padx=(20, 6), pady=(10, 0))
+        vram = tk.StringVar(value=f"{hw['vram_gb']:.0f}" if hw.get("vram_gb") else "")
+        ctk.CTkEntry(top, textvariable=vram, width=60, fg_color=CARD, border_color=BORDER).grid(
+            row=0, column=2, pady=(10, 0))
+        only_fit = tk.BooleanVar(value=True)
+        ctk.CTkSwitch(top, text="Only what fits", variable=only_fit, progress_color=ACCENT,
+                      command=lambda: render()).grid(row=0, column=3, padx=20, pady=(10, 0))
+        tag = tk.StringVar(value="all")
+        ctk.CTkSegmentedButton(top, values=["all"] + list(TAGS), variable=tag, command=lambda _: render(),
+                               selected_color=ACCENT, selected_hover_color=ACCENT_HOVER).grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=14, pady=8)
+        hint = ctk.CTkLabel(top, text="", text_color=MUTED, anchor="w", justify="left", wraplength=740)
+        hint.grid(row=2, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 10))
+        lst = ctk.CTkScrollableFrame(win, fg_color=BG)
+        lst.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        lst.grid_columnconfigure(0, weight=1)
+        vram.trace_add("write", lambda *_: render())
+
+        def render():
+            for w in lst.winfo_children():
+                w.destroy()
+            try:
+                gb = float(vram.get())
+            except ValueError:
+                gb = None
+            ctx, kv = int(lc["ctx_size"]), lc.get("kv_cache") or "f16"
+            best = recommended(gb, ctx, kv) if gb else None
+            hint.configure(text=(f"Sizes are for your {ctx:,}-token context with {kv} context memory (Model → "
+                                 "Runtime). Pick a smaller context to fit a bigger model.\n"
+                                 + "  ·  ".join(f"{k}: {v}" for k, v in TAGS.items()))
+                           if gb else "Type how much VRAM your graphics card has to see what fits.")
+            shown = [m for m in CATALOG if tag.get() == "all" or tag.get() in m.tags]
+            if gb and only_fit.get():
+                shown = [m for m in shown if fit(m, gb, ctx, kv) != "too big"]
+            shown.sort(key=lambda m: (m is not best, -m.quality, m.size))
+            if not shown:
+                ctk.CTkLabel(lst, text="Nothing here fits. Turn off “Only what fits” or lower the context size.",
+                             text_color=MUTED).grid(row=0, column=0, pady=20)
+            for i, m in enumerate(shown):
+                self._model_row(lst, i, m, gb, ctx, kv, m is best, win)
+        render()
+
+    def _model_row(self, parent, row, m, gb, ctx, kv, best, win):
+        card = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=12, border_width=1,
+                            border_color=ACCENT if best else BORDER)
+        card.grid(row=row, column=0, sticky="ew", pady=4)
+        card.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="w", padx=14, pady=(10, 0))
+        ctk.CTkLabel(head, text=m.name, font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        if best:
+            ctk.CTkLabel(head, text=" ★ Recommended ", fg_color=ACCENT, corner_radius=6,
+                         font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=8)
+        for t in m.tags:
+            ctk.CTkLabel(head, text=f" {t} ", fg_color=CARD, corner_radius=6, text_color="#c9cdd9",
+                         font=ctk.CTkFont(size=11)).pack(side="left", padx=3)
+        ctk.CTkLabel(card, text=m.note, text_color=MUTED, anchor="w").grid(row=1, column=0, sticky="w", padx=14)
+        state = fit(m, gb, ctx, kv)
+        color = {"fits": OK, "tight": WARN, "too big": BAD}.get(state, MUTED)
+        ctk.CTkLabel(card, text=f"needs ≈{m.vram_gb(ctx, kv):.1f} GB VRAM" + (f" · {state}" if state else "")
+                     + f"  ·  {m.download_gb:.1f} GB download", text_color=color, anchor="w").grid(
+            row=2, column=0, sticky="w", padx=14, pady=(0, 10))
+        current = os.path.basename(self.cfg["llm"]["model_path"] or "") == m.file
+        have = downloaded(self.cfg, m)
+        text = "In use" if current else "Use" if have else "Download & use"
+        btn = self.button(card, text, lambda: self._use_model(m, win), primary=not current, width=140)
+        btn.grid(row=0, column=1, rowspan=3, padx=14)
+        if current or self.core.downloader.busy:
+            btn.configure(state="disabled")
+
+    def _use_model(self, m, win):
+        if not downloaded(self.cfg, m):
+            if not messagebox.askyesno("Download", f"Download {m.name} ({m.download_gb:.1f} GB) from Hugging Face "
+                                                   f"to {os.path.dirname(local_paths(self.cfg, m)[0])}?", parent=win):
+                return
+        win.destroy()
+        self.core.downloader.progress = (0.0, f"Starting {m.name}…")
+        self.core.submit(self.core.download_model(m))   # already-downloaded files are skipped
+
+    def _refresh_download(self):
+        frac, msg = self.core.downloader.progress
+        if msg:
+            self.dl_bar.set(frac)
+            self.dl_msg.configure(text=msg)
+        path = self.cfg["llm"]["model_path"]
+        if path != self.dl_model_path:      # a download finished: show the new paths
+            self.dl_model_path = path
+            self.model_fields[0].var.set(path)
+            self.model_fields[1].var.set(self.cfg["llm"]["mmproj_path"])
 
     def _open_verbose_log(self):
         if not os.path.isfile(VERBOSE_LOG):
@@ -790,7 +1112,13 @@ class App(ctk.CTk):
         self.behavior_fields.append(Field(c, self.cfg, "gifs", "klipy_key", "KLIPY API key", "secret",
                                           "Free at partner.klipy.com; needed for post_gif",
                                           row=1 + len(TOOL_NAMES) * 2))
-        ctk.CTkLabel(c, text="").grid(row=3 + len(TOOL_NAMES) * 2, column=0, pady=4)
+        self.behavior_fields.append(Field(c, self.cfg, "files", "extensions", "File types characters can create",
+                                          "str", "Endings for create_file, separated by commas",
+                                          row=3 + len(TOOL_NAMES) * 2))
+        self.behavior_fields.append(Field(c, self.cfg, "files", "max_tokens", "Longest file (tokens)", "int",
+                                          "About 3 characters each; files are written in a call of their own",
+                                          row=5 + len(TOOL_NAMES) * 2))
+        ctk.CTkLabel(c, text="").grid(row=7 + len(TOOL_NAMES) * 2, column=0, pady=4)
         self.button(s, "Save", lambda: self.save_fields(self.behavior_fields), width=110).grid(
             row=5, column=0, sticky="w", padx=32, pady=20)
 
@@ -936,6 +1264,11 @@ class App(ctk.CTk):
             self.log_box.configure(state="disabled")
         self._refresh_status()
         self._refresh_engine()
+        self._refresh_download()
+        try:
+            self._refresh_chat()
+        except Exception as e:      # never let one bad message stop the window from updating
+            log(f"[gui] chat view: {e!r}", level="warn")
         self.after(400, self._tick)
 
     def _refresh_status(self):
@@ -967,19 +1300,19 @@ class App(ctk.CTk):
             self.summoned_box.configure(text="Connect to Discord to see summoned characters.")
             self._channels_loaded = False
         self.side_status.configure(text=f"Model: {'suspended' if llm.suspended_by else llm.state}\nDiscord: {ds}")
-        self._refresh_context(bot if ds == "connected" else None)
+        self._refresh_context()
 
-    def _refresh_context(self, bot):
+    def _refresh_context(self):
         """Context meter: one bar per summoned character (computed on the core loop every 3 s)."""
         now = time.monotonic()
-        if bot and now >= self.ctx_next:
+        if now >= self.ctx_next:
             self.ctx_next = now + 3
 
             async def report():
-                return bot.context_report()
+                return self.core.context_report()
             fut = self.core.submit(report())
             fut.add_done_callback(lambda f: setattr(self, "ctx_data", f.result() if not f.exception() else []))
-        rows = self.ctx_data if bot else None
+        rows = self.ctx_data
         names = [(r[0], r[1]) for r in rows or []]
         if names != list(self.ctx_rows):
             for widgets in self.ctx_rows.values():
@@ -995,8 +1328,8 @@ class App(ctk.CTk):
                 num.grid(row=i, column=2, sticky="e", pady=3)
                 self.ctx_rows[key] = (lab, bar, num)
         if not names:
-            self.ctx_empty.configure(text="Connect to Discord and summon a character to see its context."
-                                     if not bot else "Nobody summoned yet." if rows is not None else "…")
+            self.ctx_empty.configure(text="Summon a character (on Discord or in Chat) to see its context."
+                                     if rows is not None else "…")
             self.ctx_empty.grid()
             return
         self.ctx_empty.grid_remove()

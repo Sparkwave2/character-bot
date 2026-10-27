@@ -37,11 +37,11 @@ def _run(cmd):
 
 
 def detect_hardware():
-    """Return dict(os, arch, nvidia, cuda_version, vulkan, gpu_name)."""
+    """Return dict(os, arch, nvidia, cuda_version, vulkan, gpu_name, vram_gb)."""
     osname = {"win32": "win", "darwin": "macos"}.get(sys.platform, "ubuntu")
     m = platform.machine().lower()
     arch = "arm64" if m in ("arm64", "aarch64") else "x64"
-    hw = {"os": osname, "arch": arch, "nvidia": False, "cuda_version": None, "vulkan": False, "gpu_name": ""}
+    hw = {"os": osname, "arch": arch, "nvidia": False, "cuda_version": None, "vulkan": False, "gpu_name": "", "vram_gb": None}
     if osname != "macos":
         out = _run(["nvidia-smi"])
         v = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", out)
@@ -50,6 +50,8 @@ def detect_hardware():
             hw["cuda_version"] = v.group(1)
             hw["gpu_name"] = _run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]).strip().splitlines()[0:1]
             hw["gpu_name"] = hw["gpu_name"][0] if hw["gpu_name"] else "NVIDIA GPU"
+            mem = re.findall(r"\d+", _run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]))
+            hw["vram_gb"] = int(mem[0]) / 1024 if mem else None
         if osname == "win":
             hw["vulkan"] = os.path.exists(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "vulkan-1.dll"))
         else:

@@ -236,9 +236,10 @@ class LlamaServer:
         return "(llama-server couldn't render the chat template; this is the JSON that was sent)\n" + \
             json.dumps(_without_image_data(req), ensure_ascii=False, indent=1)
 
-    async def chat(self, messages, tools=None, tool_choice="auto"):
+    async def chat(self, messages, tools=None, tool_choice="auto", max_tokens=None):
         """Returns the raw `message` dict of the first choice. tool_choice="required" makes the
-        model call at least one tool (llama-server enforces it with a grammar)."""
+        model call at least one tool (llama-server enforces it with a grammar). `max_tokens`
+        overrides the reply limit (files are longer than chat messages)."""
         if not self.ready:
             raise RuntimeError("model is not loaded")
         c = self.cfg["llm"]
@@ -248,7 +249,7 @@ class LlamaServer:
             "top_p": c["top_p"],
             "min_p": c["min_p"],
             "repeat_penalty": c["repeat_penalty"],
-            "max_tokens": c["max_tokens"],
+            "max_tokens": max_tokens or c["max_tokens"],
             "stream": False,
         }
         if tools and c.get("use_native_tools", True):
@@ -269,7 +270,7 @@ class LlamaServer:
                 if "tools" in body and "tool" in str(err).lower():
                     log(f"[llm] request with tools failed ({err}); retrying without native tools")
                     c["use_native_tools"] = False
-                    return await self.chat(messages, tools)
+                    return await self.chat(messages, tools, max_tokens=max_tokens)
                 raise RuntimeError(f"llama-server error {r.status}: {err}")
         u = data.get("usage") or {}
         used = int(u.get("prompt_tokens") or 0) + int(u.get("completion_tokens") or 0)

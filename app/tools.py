@@ -35,6 +35,8 @@ ALL_TOOLS = [
     _tool("draw_image", "Draw a picture and post it; you'll see it.",
           prompt=("string", "English description: subject, look, setting, style")),
     _tool("post_gif", "Post a GIF matching a search.", query=("string", "e.g. happy dance")),
+    _tool("create_file", "Make a file (code, story, list, data...) and post it in the chat. You write its contents "
+          "right after, in full.", filename=("string", None), about=("string", "what goes in it")),
 ]
 TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 # what each switch on the Behavior page says, and whether it is on by default
@@ -46,6 +48,7 @@ TOOL_LABELS = {
     "view_profile_picture": ("View profile pictures", True), "web_search": ("Search the web", True),
     "read_webpage": ("Read web pages", True), "draw_image": ("Draw pictures (Drawing page)", False),
     "post_gif": ("Post GIFs (needs a KLIPY key)", True),
+    "create_file": ("Create files (types below)", True),
 }
 
 

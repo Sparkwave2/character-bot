@@ -17,7 +17,7 @@ from .config import ROOT
 
 MEMORY_PATH = os.path.join(ROOT, "memory.json")
 GIF_LINK_RE = re.compile(r"https?://\S*klipy\S*", re.I)
-MEDIA_ONLY_RE = re.compile(r"[\s.]*(\[image\][\s.]*)*")
+MEDIA_ONLY_RE = re.compile(r"[\s.]*((\[image\]|\[attached file: [^\]]*\])[\s.]*)*")
 
 
 def est_tokens(text):

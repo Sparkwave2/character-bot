@@ -34,6 +34,7 @@ DEFAULTS = {
         "max_tokens": 400,
         "use_native_tools": True,   # send OpenAI-style tools (needs --jinja)
         "verbose_log": False,       # write every prompt (word for word) and reply to logs/llm-verbose.log
+        "models_dir": "",           # where the model picker downloads to; empty = ./models
     },
     "discord": {
         "token": "",
@@ -72,6 +73,14 @@ DEFAULTS = {
         "interruptible": True,      # talking over a character stops it, and it answers the new message instead
     },
     "tools": {name: on for name, (_label, on) in TOOL_LABELS.items()},   # each command on/off
+    "files": {                      # the create_file command
+        "extensions": "txt, md, py, js, ts, html, css, json, csv, xml, yaml, toml, ini, sh, bat, ps1, c, cpp, "
+                      "h, cs, java, go, rs, lua, sql, svg, tex, srt",
+        "max_tokens": 4000,         # how long a file may get
+    },
+    "localchat": {
+        "user_name": "",            # your name in the local chat; empty = your Windows user name
+    },
     "gifs": {
         "klipy_key": "",            # free key from partner.klipy.com
     },

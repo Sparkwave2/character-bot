@@ -84,6 +84,7 @@ def describe_action(name, args):
         "view_profile_picture": lambda: f"looked at {a('name')}'s profile picture",
         "draw_image": lambda: f'drew a picture: "{a("prompt")}"',
         "post_gif": lambda: f'posted a GIF ("{a("query")}")',
+        "create_file": lambda: f'made the file {a("filename")} ({a("about")})',
     }.get(name, lambda: None)()   # reactions and leaving are recorded as events already
 
 
@@ -96,7 +97,8 @@ DECIDE = ("[system] Before you write your reply, decide whether one of your comm
 EXAMPLES = [("add_reaction", "reacting to a message"), ("write_note", "writing down something worth remembering"),
             ("read_note", "checking your notes"), ("get_current_time", "checking the time"),
             ("web_search", "looking something up"), ("draw_image", "drawing what was asked for"),
-            ("post_gif", "posting a GIF"), ("leave_channel", "leaving when you're told to go")]
+            ("post_gif", "posting a GIF"), ("create_file", "making a file someone wants"),
+            ("leave_channel", "leaving when you're told to go")]
 _decide_broken = False
 
 

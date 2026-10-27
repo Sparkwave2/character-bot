@@ -12,8 +12,10 @@ from .draw import ImageGen
 from .engine import Engine
 from .games import GameWatcher
 from .llm import LlamaServer
+from .localchat import LocalChat
 from .log import log
 from .memory import MemoryBank
+from .models import Downloader
 from .stt import Transcriber
 from .tts import ElevenLabs, LocalTTS
 
@@ -30,6 +32,10 @@ class Core:
         self.tts = ElevenLabs(self.cfg)
         self.local_tts = LocalTTS(self.cfg)
         self.draw = ImageGen(self.cfg)
+        self.downloader = Downloader(self.cfg)
+        self.gen_lock = asyncio.Lock()   # one character generates at a time (Discord, voice and local chat)
+        self.context_used = {}           # char lower -> (tokens of its last reply's biggest call, time)
+        self.localchat = LocalChat(self)
         self.bot = None
         self.bot_task = None
         self.want_loaded = False   # user intent; game watcher respects it
@@ -115,6 +121,24 @@ class Core:
         elif self.engine.installed:
             log(f"[engine] llama.cpp is up to date ({tag})")
 
+    async def download_model(self, model):
+        """Downloads a model from the picker and makes it the one that loads (restarting it if loaded)."""
+        model_path, mmproj_path = await self.downloader.download(await self.llm.session(), model)
+        c = self.cfg["llm"]
+        c["model_path"], c["mmproj_path"] = model_path, mmproj_path
+        self.cfg.save()
+        log(f"[models] {model.name} is now the model")
+        if self.llm.state != self.llm.STOPPED:
+            await self.llm.stop()
+            await self.load_model()
+
+    def context_report(self):
+        """Context meter rows for every summoned character, on Discord and in the local chat."""
+        rows = self.localchat.context_report()
+        if self.bot and self.bot.is_ready():
+            rows = self.bot.context_report() + rows
+        return rows
+
     async def unload_model(self):
         self.want_loaded = False
         self.llm.suspended_by = None
@@ -173,4 +197,5 @@ class Core:
         if self.bot and not self.bot.is_closed():
             await self.bot.close()
         await self.draw.stop()
+        await self.localchat.close()
         await self.llm.close()
