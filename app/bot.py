@@ -504,6 +504,9 @@ class CharacterBot(discord.Client):
         text = message.clean_content or ""
         if not text and message.stickers:
             text = "[sticker: " + ", ".join(s.name for s in message.stickers) + "]"
+        if with_images and self.behavior.get("voice_messages", True):
+            heard = await self._hear_voice_messages(message)
+            text = (text + "\n" + heard).strip() if heard else text
         author = char_name or message.author.display_name
         self.names[message.author.id] = author
         return mem.new_entry(msg_id=message.id, channel_id=message.channel.id,
@@ -511,6 +514,25 @@ class CharacterBot(discord.Client):
                              author_id=message.author.id, char_name=char_name, text=text,
                              images=images, reply_ref=reply_ref,
                              ts=message.created_at.timestamp())
+
+    async def _hear_voice_messages(self, message):
+        """Discord voice messages (Ogg Opus attachments) -> "[voice message] what was said"."""
+        out = []
+        for a in message.attachments:
+            if not a.is_voice_message() or (a.duration or 0) > 600:
+                continue
+            names = [i["name"] for i in self.present(message.channel.id).values()]
+            try:
+                data = await a.read()
+                said = await asyncio.to_thread(self.core.stt.transcribe_file, data,
+                                               f"Talking with {', '.join(names)}." if names else None)
+            except Exception as e:
+                log(f"[voice] couldn't transcribe {message.author.display_name}'s voice message: {e}", level="warn")
+                out.append("[voice message that couldn't be understood]")
+                continue
+            log(f"[voice] {message.author.display_name}'s voice message: {said or '(nothing)'}")
+            out.append(f"[voice message] {said}" if said else "[voice message with no speech]")
+        return "\n".join(out)
 
     def _witness(self, channel_id, entry):
         for info in self.present(channel_id).values():

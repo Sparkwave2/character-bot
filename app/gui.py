@@ -721,12 +721,13 @@ class App(ctk.CTk):
                  ("history_limit", "Stored messages per character", "int", "Hard cap; context trimming happens anyway"),
                  ("typing_indicator", "Show typing indicator", "bool", "")]
         self.behavior_fields = [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
-        c = self.card(s, 3, "Vision")
+        c = self.card(s, 3, "Images and audio")
         specs = [("max_images_in_context", "Images kept in context", "int", "Older images become [image]"),
                  ("image_token_cost", "Tokens per image (estimate)", "int", "Used for context trimming"),
                  ("max_image_side", "Max image size (px)", "int", "Images are downscaled"),
                  ("fetch_image_links", "Read pasted image links", "bool", ""),
-                 ("allow_profile_pictures", "Characters can view profile pictures", "bool", "Only when they ask")]
+                 ("allow_profile_pictures", "Characters can view profile pictures", "bool", "Only when they ask"),
+                 ("voice_messages", "Characters hear voice messages", "bool", "Transcribed locally with Whisper")]
         self.behavior_fields += [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
         c = self.card(s, 4, "Internet")
         specs = [("web_search", "Characters can search the web", "bool", "DuckDuckGo search and reading pages")]

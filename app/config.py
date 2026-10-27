@@ -47,6 +47,7 @@ DEFAULTS = {
         "allow_profile_pictures": True,
         "web_search": True,         # characters can search DuckDuckGo and read web pages
         "fetch_image_links": True,
+        "voice_messages": True,     # Discord voice messages are transcribed with Whisper
         "history_limit": 400,       # hard cap on stored messages per channel
         "typing_indicator": True,
     },

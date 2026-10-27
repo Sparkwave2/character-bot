@@ -1,5 +1,6 @@
 """Speech to text with faster-whisper. The model loads on first use and stays loaded."""
 import glob
+import io
 import os
 import sys
 import threading
@@ -69,7 +70,15 @@ class Transcriber:
         self.load()
         a = np.frombuffer(pcm48_stereo, dtype=np.int16).astype(np.float32) / 32768.0
         a = a[: len(a) // 6 * 6].reshape(-1, 6)   # 3 stereo frames -> one 16 kHz mono sample
-        audio = a.mean(axis=1)
+        return self._run(a.mean(axis=1), hint)
+
+    def transcribe_file(self, data, hint=None):
+        """An audio file's bytes (e.g. a Discord voice message, Ogg Opus) -> text. Blocking."""
+        self.load()
+        from faster_whisper.audio import decode_audio
+        return self._run(decode_audio(io.BytesIO(data), sampling_rate=16000), hint)
+
+    def _run(self, audio, hint):
         lang = (self.cfg["voice"].get("stt_language") or "").strip() or None
         with self._lock:
             segments, _info = self.model.transcribe(audio, language=lang, beam_size=1, vad_filter=True,
