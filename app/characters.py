@@ -5,7 +5,8 @@
       "prompt": "You are Luna, ...",
       "avatar": "luna.png",         # path relative to the json, or a data:image/...;base64 URI
       "description": "A sleepy witch",  # short, shown in /characters and the summon list
-      "voice": "21m00Tcm4TlvDq8ikWAM"   # ElevenLabs voice ID; without one the character can't join voice
+      "voice": "21m00Tcm4TlvDq8ikWAM",  # ElevenLabs voice ID; without one the character can't join voice
+      "local_voice": "af_bella"         # Kokoro voice, used when the Voice page is set to the local voice
     }
 """
 import base64
@@ -26,6 +27,7 @@ class Character:
     description: str = ""
     voice: str = ""
     extra: dict = field(default_factory=dict)
+    local_voice: str = ""   # Kokoro voice name
 
     @property
     def key(self):
@@ -57,10 +59,12 @@ class Character:
         d = dict(self.extra)
         d.update({"name": self.name, "description": self.description, "prompt": self.prompt,
                   "avatar": self.avatar, "voice": self.voice})
+        if self.local_voice:
+            d["local_voice"] = self.local_voice
         return d
 
 
-OWN_FIELDS = ("name", "description", "prompt", "avatar", "voice")
+OWN_FIELDS = ("name", "description", "prompt", "avatar", "voice", "local_voice")
 
 
 def slug(text):
@@ -86,7 +90,8 @@ class CharacterStore:
                     d = json.load(f)
                 extra = {k: v for k, v in d.items() if k not in OWN_FIELDS}
                 c = Character(d["name"], d.get("prompt", ""), d.get("avatar", ""), path,
-                              str(d.get("description") or ""), str(d.get("voice") or "").strip(), extra)
+                              str(d.get("description") or ""), str(d.get("voice") or "").strip(), extra,
+                              str(d.get("local_voice") or "").strip())
                 chars[c.name.lower()] = c
             except (OSError, json.JSONDecodeError, KeyError):
                 continue

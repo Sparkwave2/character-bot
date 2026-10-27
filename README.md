@@ -18,6 +18,18 @@ A local AI character bot for Discord. A Qwen vision model (GGUF) runs through ll
    ```
 
    Without them it runs on the CPU, which is slower.
+
+   **Local voice (optional).** Instead of ElevenLabs, characters can speak with [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), a small speech model that runs on this PC. It's free, has no quota, and starts talking in about 0.2 s on the GPU. Install it like this; `--no-deps` stops pip from replacing the GPU build of onnxruntime with the CPU one:
+
+   ```bash
+   .venv\Scripts\python -m pip install onnxruntime-gpu espeakng-loader phonemizer nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12
+   ```
+
+   ```bash
+   .venv\Scripts\python -m pip install --no-deps kokoro-onnx
+   ```
+
+   Then turn on **Voice → Use the local voice**. The model (~350 MB) downloads into the **Model folder** on the first `/join`. Choose a voice per character with the **Local** Pick… button on the Characters page; characters without one use the default voice. With the local voice on, every character can join voice chat. Without the GPU packages Kokoro runs on the CPU, at about 3× real time.
 5. **Drawing (optional).** On the **Drawing** page, set the folder of your AUTOMATIC1111 or Forge WebUI (the one containing `webui.bat`), then use **Pick…** to choose a model. Checkpoints of 5.5 GB or more are marked SDXL; that's a guess based on file size. Then turn on **Draw pictures** on the Behavior page. The first drawing starts the WebUI in the background (API only, no window, port 7861) and closes it when the app closes. A WebUI you start yourself with `--api` works too.
    - **GPU memory.** Plain A1111 can't share the GPU well with llama-server, so the default launch option is `--medvram-sdxl`, and the model is unloaded after a few idle minutes. [Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge) is a fork of A1111 that manages GPU memory on its own, offloading parts of the model when VRAM is tight. It uses the same API and folder layout, so you can switch by pointing the folder setting at a Forge install. While a game from the Games page is running, drawing is paused and the WebUI is stopped.
 6. **GIFs (optional).** Get a free API key at [partner.klipy.com](https://partner.klipy.com) and put it under **Behavior → Commands**.
@@ -47,7 +59,8 @@ Each character is a JSON file in `characters/`:
 
 - `avatar` is an image path relative to the JSON file, or a `data:image/png;base64,...` URI.
 - `description` is optional. It's shown in `/characters` and in the autocomplete lists.
-- `voice` is an ElevenLabs voice ID, or the name of a voice in your ElevenLabs account. A character without a voice can't join voice chat.
+- `voice` is an ElevenLabs voice ID, or the name of a voice in your ElevenLabs account. A character without a voice can't join voice chat, unless the local voice is on.
+- `local_voice` (optional) is a Kokoro voice such as `af_bella` or `jf_alpha`, used when the local voice is on.
 
 You can create and edit characters in the **Characters** page, which copies the chosen picture next to the JSON. **Pick…** next to the voice field lists the voices in your ElevenLabs account, labelled by type. Free ElevenLabs plans can use Built-in and Designed voices (and your own clones) through the API, but not Voice Library voices; those are greyed out and marked "Library (paid plan)".
 
@@ -105,7 +118,7 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
   - Links that can't be verified (403, rate limits, timeouts) are let through.
   - Both of these can be turned off under Behavior.
 - **Images.** Characters see uploaded images, stickers, embed images and pasted image links. Links without an image extension are fetched only if the server answers with an `image/*` content type.
-- **Voice chat.** Each speaker's audio is collected until they pause (*Pause that ends speech* on the Voice page). Whisper then transcribes it, the character answers, and ElevenLabs speaks the answer. What's said in voice goes into the character's memory, tagged `in #General (voice)`, so the character remembers it in text chat too. Emojis, links and `*actions*` are left out of the spoken reply. Discord's voice encryption (DAVE) is handled for both sending and receiving.
+- **Voice chat.** Each speaker's audio is collected until they pause (*Pause that ends speech* on the Voice page). Whisper then transcribes it, the character answers right away (text chat's reply delay doesn't apply), and ElevenLabs or the local voice speaks the answer. The speech is streamed, so playback starts while the rest is still being made. Each reply logs where the time went, for example `[voice] Mayo started talking 2.1 s after the speaker stopped: pause detection 0.8, Whisper 0.3, model 0.7 (…), local voice 0.2`. What's said in voice goes into the character's memory, tagged `in #General (voice)`, so the character remembers it in text chat too. Emojis, links and `*actions*` are left out of the spoken reply. Discord's voice encryption (DAVE) is handled for both sending and receiving.
 - **Games.** Add process names (for example `eldenring.exe`) on the **Games** page. While any of them is running, llama-server is stopped, which frees the VRAM. It reloads automatically when the game closes. While the model is unloaded, characters stay quiet.
 
 ## Files
@@ -118,4 +131,4 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 | `notes/` | Each character's notes |
 | `llama.cpp/` | Managed llama.cpp build and its `installed.json` manifest |
 | `models/whisper/` | Whisper speech-recognition model (unless you set another folder) |
-| `app/` | Source: `bot.py` (Discord), `voice.py` (voice chat), `stt.py` (Whisper), `tts.py` (ElevenLabs), `web.py` (search), `draw.py` (Stable Diffusion WebUI), `gifs.py` (KLIPY), `engine.py` (llama.cpp installer), `llm.py` (llama-server process), `memory.py` (context), `games.py`, `gui.py` |
+| `app/` | Source: `bot.py` (Discord), `voice.py` (voice chat), `stt.py` (Whisper), `tts.py` (ElevenLabs and Kokoro), `web.py` (search), `draw.py` (Stable Diffusion WebUI), `gifs.py` (KLIPY), `engine.py` (llama.cpp installer), `llm.py` (llama-server process), `memory.py` (context), `games.py`, `gui.py` |

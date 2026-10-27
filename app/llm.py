@@ -22,6 +22,7 @@ class LlamaServer:
         self.state = self.STOPPED
         self.suspended_by = None   # game process name while suspended
         self.peak_tokens = 0       # biggest prompt+reply (tokens) since the caller last reset it
+        self.work = {}             # token counts from llama-server's timings since the caller last reset it
         self._lock = asyncio.Lock()
         self._session = None
         self.on_state = lambda s: None
@@ -205,4 +206,8 @@ class LlamaServer:
         u = data.get("usage") or {}
         used = int(u.get("prompt_tokens") or 0) + int(u.get("completion_tokens") or 0)
         self.peak_tokens = max(self.peak_tokens, used)
+        t = data.get("timings") or {}
+        for k in ("prompt_n", "cache_n", "predicted_n"):   # tokens read anew, reused from cache, written
+            self.work[k] = self.work.get(k, 0) + int(t.get(k) or 0)
+        self.work["calls"] = self.work.get("calls", 0) + 1
         return data["choices"][0]["message"]

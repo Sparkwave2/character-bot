@@ -56,14 +56,18 @@ DEFAULTS = {
         "typing_indicator": True,
     },
     "voice": {
+        "local_tts": False,         # speak with Kokoro on this PC instead of ElevenLabs (free, fast)
         "elevenlabs_key": "",
         "tts_model": "eleven_flash_v2_5",
+        "local_voice": "af_heart",  # Kokoro voice for characters without their own local voice
+        "local_speed": 1.0,
+        "local_tts_device": "auto", # auto (GPU if it works) | cpu
+        "local_tts_dir": "",        # empty = ./models/kokoro
         "stt_model": "small",       # Whisper size: tiny | base | small | medium | large-v3 | turbo
         "stt_device": "auto",       # auto (GPU if it works) | cuda | cpu
         "stt_language": "",         # e.g. "en"; empty = detect
         "stt_model_dir": "",        # empty = ./models/whisper
         "silence_seconds": 0.8,     # a pause this long ends what someone is saying
-        "reply_delay": 0.6,         # extra wait before answering
     },
     "tools": {name: on for name, (_label, on) in TOOL_LABELS.items()},   # each command on/off
     "gifs": {

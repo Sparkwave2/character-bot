@@ -1,13 +1,14 @@
-"""Voice chat: a character joins a voice channel, listens with Whisper and answers with ElevenLabs.
+"""Voice chat: a character joins a voice channel, listens with Whisper and answers with ElevenLabs
+or the local voice (Kokoro).
 
 Discord encrypts voice end to end (DAVE). discord.py handles that for sending, but the
 voice_recv extension predates it, so the reader is patched below to strip the DAVE layer
 from received audio as well."""
 import asyncio
-import io
 import threading
 import time
 
+import aiohttp
 import davey
 import discord
 from discord.ext import voice_recv
@@ -59,6 +60,51 @@ def _patch_reader_for_dave():
 _patch_reader_for_dave()
 
 
+class StreamSource(discord.AudioSource):
+    """PCM that is still arriving: plays what's there, and silence while the next part is made."""
+    FRAME = 3840                       # 20 ms of Discord PCM
+
+    def __init__(self):
+        self.buf = bytearray()
+        self.lock = threading.Lock()
+        self.finished = False
+        self.started = False
+
+    def add(self, pcm):
+        with self.lock:
+            self.buf += pcm
+
+    def finish(self):
+        self.finished = True
+
+    def read(self):
+        with self.lock:
+            if len(self.buf) >= self.FRAME or (self.finished and self.buf):
+                out = bytes(self.buf[:self.FRAME]).ljust(self.FRAME, b"\0")
+                del self.buf[:self.FRAME]
+                return out
+        return b"" if self.finished else b"\0" * self.FRAME
+
+    def is_opus(self):
+        return False
+
+
+def log_timing(name, t, engine):
+    """Where the time went between someone going quiet and the character starting to talk."""
+    parts = []
+    if "ended" in t:
+        parts += [f"pause detection {t['pause']:.1f}", f"Whisper {t['whisper']:.1f}"]
+    if t.get("queue", 0) >= 0.1:
+        parts.append(f"waiting for a text-chat reply {t['queue']:.1f}")
+    w = t.get("work") or {}
+    extra = f", {w['calls']} model calls" if w.get("calls", 1) > 1 else ""
+    parts.append(f"model {t['model']:.1f} ({w.get('prompt_n', 0)} prompt tokens read, "
+                 f"{w.get('cache_n', 0)} from cache, {w.get('predicted_n', 0)} written{extra})")
+    parts.append(f"{engine} {t['voice']:.1f}")
+    total = f" {time.monotonic() - t['ended']:.1f} s after the speaker stopped" if "ended" in t else ""
+    log(f"[voice] {name} started talking{total}: " + ", ".join(parts))
+
+
 class Listener(voice_recv.AudioSink):
     """Runs on the voice reader thread; hands decoded PCM to the session."""
 
@@ -89,6 +135,7 @@ class VoiceSession:
         self.reply_task = None
         self.busy = False               # generating or speaking
         self.again = False              # someone spoke meanwhile; reply once more afterwards
+        self.timing = None              # how long hearing the last utterance took, for the log
         self.closed = False
         self.watch_task = asyncio.create_task(self._watch())
         vc.listen(Listener(self))
@@ -128,9 +175,10 @@ class VoiceSession:
                         done.append((user, bytes(buf)))
             for user, pcm in done:
                 if len(pcm) >= MIN_SPEECH * BYTES_PER_SEC:
-                    asyncio.create_task(self._hear(user, pcm))
+                    asyncio.create_task(self._hear(user, pcm, now - gap))
 
-    async def _hear(self, user, pcm):
+    async def _hear(self, user, pcm, ended):
+        t = time.monotonic()
         try:
             text = await asyncio.to_thread(self.core.stt.transcribe, pcm, f"Talking with {self.char.name}.")
         except Exception as e:
@@ -138,6 +186,7 @@ class VoiceSession:
             return
         if self.closed or len(text) < 2:
             return
+        self.timing = {"ended": ended, "pause": t - ended, "whisper": time.monotonic() - t}
         name = getattr(user, "display_name", None) or user.name
         self.bot.names[user.id] = name
         log(f"[voice] {name}: {text}")
@@ -151,16 +200,10 @@ class VoiceSession:
         if self.busy:
             self.again = True
             return
-        if self.reply_task and not self.reply_task.done():
-            self.reply_task.cancel()   # still waiting: wait for the rest of what they're saying
-        self.reply_task = asyncio.create_task(self._reply_later())
+        self.busy = True               # no extra wait: the pause that ended the speech was enough
+        self.reply_task = asyncio.create_task(self._reply_now())
 
-    async def _reply_later(self):
-        try:
-            await asyncio.sleep(float(self.settings.get("reply_delay", 0.6)))
-        except asyncio.CancelledError:
-            return
-        self.busy = True
+    async def _reply_now(self):
         try:
             await self._reply()
         except Exception as e:
@@ -180,16 +223,21 @@ class VoiceSession:
         system = self.bot._system_prompt(self.channel, self.char, present=[self.char.name], tools=tools) + \
             VOICE_RULES.format(channel=self.channel.name)
         budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256 - tools_tokens(tools)
+        timing, self.timing = self.timing or {}, None
+        t = time.monotonic()
         async with self.bot.gen_lock:
+            timing["queue"] = time.monotonic() - t   # a text-chat reply was being written
+            t = time.monotonic()
             msgs = self.core.memory.build_messages(self.char.name, system, self.channel.id, budget,
                                                    int(b["image_token_cost"]), int(b["max_images_in_context"]))
             msgs.append(now_note())
             log(f"[voice] {self.char.name} is thinking in {self.channel_label}")
-            llm.peak_tokens = 0
+            llm.peak_tokens, llm.work = 0, {}
             res = await run_turn(llm, msgs, tools, self.char.name,
                                  on_react=lambda a: _no_reactions(),
                                  handlers=self.bot._local_tools(self.char))
             self.bot.note_usage(self.char.name)
+            timing["model"], timing["work"] = time.monotonic() - t, dict(llm.work)
         self.bot._remember_actions(self.char, self.channel.id, self.channel_label, res)
         text = "" if res.silent else speakable(res.text)
         if text and not self.closed:
@@ -198,25 +246,44 @@ class VoiceSession:
                                                   author=self.char.name, char_name=self.char.name,
                                                   text=res.text, ts=time.time()))
             log(f"[voice] {self.char.name}: {text}")
-            await self.say(text)
+            await self.say(text, timing)
         if res.leave:
             await self.bot.leave_voice(self.channel.guild, f"{self.char.name} decided to leave {self.channel_label}.",
                                        f"👋 **{self.char.name}** left voice chat.")
 
-    async def say(self, text):
+    def _speech(self, text):
+        if self.settings.get("local_tts"):
+            return self.core.local_tts.stream(self.core.local_tts.voice_for(self.char), text), "local voice"
+        engine = self.core.tts
+
+        async def online():
+            async for pcm in engine.stream(await self.core.llm.session(), self.char.voice, text):
+                yield pcm
+        return online(), "ElevenLabs " + (self.settings.get("tts_model") or "")
+
+    async def say(self, text, timing=None):
+        """Plays the reply while it is still being turned into speech."""
+        source, done, t = StreamSource(), asyncio.Event(), time.monotonic()
+        speech, engine = self._speech(text)
         try:
-            pcm = await self.core.tts.speak(await self.core.llm.session(), self.char.voice, text)
-        except (TTSError, OSError, asyncio.TimeoutError) as e:
+            async for pcm in speech:
+                if self.closed or not self.vc.is_connected():
+                    break
+                source.add(pcm)
+                if not source.started:
+                    source.started = True
+                    if timing is not None:
+                        timing["voice"] = time.monotonic() - t
+                        log_timing(self.char.name, timing, engine)
+                    if self.vc.is_playing():
+                        self.vc.stop()
+                    self.vc.play(source, after=lambda e: self.loop.call_soon_threadsafe(done.set))
+        except (TTSError, OSError, asyncio.TimeoutError, aiohttp.ClientError) as e:
             log(f"[voice] {self.char.name} can't speak: {e}", level="warn")
-            return
-        if not pcm or self.closed or not self.vc.is_connected():
-            return
-        done = asyncio.Event()
-        if self.vc.is_playing():
-            self.vc.stop()
-        self.vc.play(discord.PCMAudio(io.BytesIO(pcm)),
-                     after=lambda e: self.loop.call_soon_threadsafe(done.set))
-        await done.wait()
+        finally:
+            source.finish()
+        if source.started:
+            await done.wait()
 
     async def close(self):
         self.closed = True

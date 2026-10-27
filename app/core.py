@@ -15,7 +15,7 @@ from .llm import LlamaServer
 from .log import log
 from .memory import MemoryBank
 from .stt import Transcriber
-from .tts import ElevenLabs
+from .tts import ElevenLabs, LocalTTS
 
 
 class Core:
@@ -28,6 +28,7 @@ class Core:
         self.games = GameWatcher(self)
         self.stt = Transcriber(self.cfg)
         self.tts = ElevenLabs(self.cfg)
+        self.local_tts = LocalTTS(self.cfg)
         self.draw = ImageGen(self.cfg)
         self.bot = None
         self.bot_task = None

@@ -224,7 +224,7 @@ class CharacterBot(discord.Client):
             return choices(store.characters.values(), current)
 
         async def voice_autocomplete(interaction, current):
-            return choices([c for c in store.characters.values() if c.voice], current)
+            return choices([c for c in store.characters.values() if self.can_speak(c)], current)
 
         async def present_autocomplete(interaction, current):
             names = [c["name"] for c in self.present(interaction.channel_id).values()]
@@ -296,7 +296,7 @@ class CharacterBot(discord.Client):
         lines.append("**Available** (🔊 = can join voice chat):")
         for c in self.core.characters.characters.values():
             lines.append(f"- **{c.name}**" + (f" — {c.description}" if c.description else "")
-                         + (" 🔊" if c.voice else ""))
+                         + (" 🔊" if self.can_speak(c) else ""))
         await interaction.response.send_message("\n".join(lines)[:1990], ephemeral=True)
 
     async def cmd_who(self, interaction):
@@ -316,7 +316,7 @@ class CharacterBot(discord.Client):
         """Dropdown of characters with their descriptions; choosing one runs /summon or /join."""
         chars = list(self.core.characters.characters.values())
         if cmd == "join":
-            chars = [c for c in chars if c.voice]
+            chars = [c for c in chars if self.can_speak(c)]
         else:
             here = self.present(interaction.channel_id)
             chars = [c for c in chars if c.name.lower() not in here]
@@ -379,10 +379,10 @@ class CharacterBot(discord.Client):
         char = self.core.characters.get(name)
         if not char:
             return await reply(f"No character named **{name}**.", ephemeral=True)
-        if not char.voice:
+        if not self.can_speak(char):
             return await reply(f"**{char.name}** doesn't have a voice, so they can't join voice chat.",
                                ephemeral=True)
-        if not self.core.tts.key:
+        if not self.local_voice and not self.core.tts.key:
             return await reply("No ElevenLabs API key is set (Voice page in the app).", ephemeral=True)
         perms = target.permissions_for(guild.me)
         if not (perms.connect and perms.speak):
@@ -398,6 +398,11 @@ class CharacterBot(discord.Client):
             await asyncio.to_thread(self.core.stt.load)   # downloads the Whisper model the first time
         except Exception as e:
             return await interaction.followup.send(f"Speech recognition couldn't start: {e}")
+        if self.local_voice:
+            try:
+                await asyncio.to_thread(self.core.local_tts.load)   # downloads Kokoro the first time
+            except Exception as e:
+                return await interaction.followup.send(f"The local voice couldn't start: {e}")
         if current:
             await self.leave_voice(guild, f"{current.char.name} left {current.channel_label} "
                                           f"to make room for {char.name}.",
@@ -816,6 +821,14 @@ class CharacterBot(discord.Client):
             if m and (pos is None or m.start() < pos):
                 best, pos = n, m.start()
         return best
+
+    @property
+    def local_voice(self):
+        return bool(self.cfg["voice"].get("local_tts"))
+
+    def can_speak(self, char):
+        """With the local voice everyone can talk (there's a default voice); ElevenLabs needs a voice per character."""
+        return self.local_voice or bool(char.voice)
 
     # ---- generation ---------------------------------------------------------
     def tool_on(self, name):

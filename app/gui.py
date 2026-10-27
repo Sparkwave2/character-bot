@@ -17,7 +17,7 @@ from .engine import resolve_backend
 from .games import running_process_names
 from .log import log, log_queue
 from .tools import TOOL_LABELS, TOOL_NAMES
-from .tts import VOICE_KINDS
+from .tts import KOKORO_VOICES, VOICE_KINDS, kokoro_label
 
 ACCENT = "#7c5cff"
 ACCENT_HOVER = "#6a4ae6"
@@ -492,9 +492,14 @@ class App(ctk.CTk):
         ctk.CTkLabel(vrow, text="Voice", text_color=MUTED).grid(row=0, column=0, padx=(0, 10))
         self.char_voice = tk.StringVar()
         ctk.CTkEntry(vrow, textvariable=self.char_voice, height=34, fg_color=CARD, border_color=BORDER,
-                     placeholder_text="ElevenLabs voice ID or name (empty = can't join voice chat)").grid(
+                     placeholder_text="ElevenLabs voice ID or name").grid(
             row=0, column=1, sticky="ew")
         self.button(vrow, "Pick…", self.pick_voice, primary=False, width=80).grid(row=0, column=2, padx=(8, 0))
+        ctk.CTkLabel(vrow, text="Local", text_color=MUTED).grid(row=0, column=3, padx=(16, 10))
+        self.char_local_voice = tk.StringVar()
+        ctk.CTkEntry(vrow, textvariable=self.char_local_voice, height=34, width=150, fg_color=CARD,
+                     border_color=BORDER, placeholder_text="Kokoro voice").grid(row=0, column=4)
+        self.button(vrow, "Pick…", self.pick_local_voice, primary=False, width=80).grid(row=0, column=5, padx=(8, 0))
         self.char_prompt = ctk.CTkTextbox(ed, fg_color=CARD, border_color=BORDER, border_width=1,
                                           font=ctk.CTkFont(size=13), wrap="word")
         self.char_prompt.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=20, pady=(0, 12))
@@ -526,6 +531,7 @@ class App(ctk.CTk):
         self.char_name.set(ch.name)
         self.char_desc.set(ch.description)
         self.char_voice.set(ch.voice)
+        self.char_local_voice.set(ch.local_voice)
         self.char_prompt.delete("1.0", "end")
         self.char_prompt.insert("1.0", ch.prompt)
         self.char_path_label.configure(text=os.path.basename(ch.path))
@@ -538,6 +544,7 @@ class App(ctk.CTk):
         self.char_name.set("")
         self.char_desc.set("")
         self.char_voice.set("")
+        self.char_local_voice.set("")
         self.char_prompt.delete("1.0", "end")
         self.char_prompt.insert("1.0", "You are ... Describe personality, speaking style, backstory and boundaries here.")
         self.char_path_label.configure(text="(new)")
@@ -590,7 +597,7 @@ class App(ctk.CTk):
             return
         ch = Character(name, self.char_prompt.get("1.0", "end").strip(), old.avatar if old else "", "",
                        self.char_desc.get().strip(), self.char_voice.get().strip(),
-                       dict(old.extra) if old else {})
+                       dict(old.extra) if old else {}, self.char_local_voice.get().strip())
         ch.path = os.path.join(CHARACTERS_DIR, slug(name) + ".json")
         if self.avatar_choice is not None:
             dest = os.path.join(CHARACTERS_DIR, slug(name) + ".png")
@@ -634,6 +641,23 @@ class App(ctk.CTk):
             ctk.CTkButton(lst, text=f"{name}   ·   {label}", anchor="w", height=34, fg_color="transparent",
                           hover_color=CARD, text_color="#e6e8ef" if free else MUTED,
                           command=lambda v=vid: choose(v)).pack(fill="x", padx=4, pady=1)
+
+    def pick_local_voice(self):
+        win = ctk.CTkToplevel(self, fg_color=BG)
+        win.title("Pick a local voice")
+        win.geometry("360x480")
+        win.transient(self)
+        win.after(100, win.grab_set)
+        lst = ctk.CTkScrollableFrame(win, fg_color=PANEL)
+        lst.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def choose(v):
+            self.char_local_voice.set(v)
+            win.destroy()
+        for v in KOKORO_VOICES:
+            ctk.CTkButton(lst, text=kokoro_label(v), anchor="w", height=34, fg_color="transparent",
+                          hover_color=CARD, text_color="#e6e8ef", command=lambda v=v: choose(v)).pack(
+                fill="x", padx=4, pady=1)
 
     def delete_character(self):
         ch = self.selected_char
@@ -763,18 +787,27 @@ class App(ctk.CTk):
         self.header(s, "Voice", "Characters with a voice can join voice chat with /join")
         c = self.card(s, 2, "Speaking (ElevenLabs)")
         specs = [("elevenlabs_key", "ElevenLabs API key", "secret", "elevenlabs.io → Developers → API keys"),
-                 ("tts_model", "TTS model", "str", "eleven_flash_v2_5 is fastest; eleven_multilingual_v2 sounds best")]
+                 ("tts_model", "TTS model", "str", "eleven_flash_v2_5 starts in ~0.1 s; eleven_v3/v4 sound best "
+                                                   "but take ~0.5 s or more")]
         self.voice_fields = [Field(c, self.cfg, "voice", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
-        c = self.card(s, 3, "Listening (Whisper, runs locally)")
+        c = self.card(s, 3, "Local voice (Kokoro, runs on this PC)")
+        specs = [("local_tts", "Use the local voice instead of ElevenLabs", "bool",
+                  "Free and fast (~0.2 s to start on the GPU). Downloads ~350 MB on first use"),
+                 ("local_voice", "Default voice", "str", "For characters without their own local voice, e.g. af_heart"),
+                 ("local_speed", "Speed", "float", "1.0 = normal"),
+                 ("local_tts_device", "Device", "str", "auto (GPU if it works) or cpu"),
+                 ("local_tts_dir", "Model folder", "dir", "Empty = models/kokoro in the app folder")]
+        self.voice_fields += [Field(c, self.cfg, "voice", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
+        c = self.card(s, 4, "Listening (Whisper, runs locally)")
         specs = [("stt_model", "Whisper model", "str", "tiny, base, small, medium, large-v3 or turbo"),
                  ("stt_device", "Device", "str", "auto, cuda or cpu"),
                  ("stt_language", "Language", "str", "e.g. en; empty = detect automatically"),
                  ("stt_model_dir", "Model folder", "str", "Empty = models/whisper in the app folder"),
-                 ("silence_seconds", "Pause that ends speech (s)", "float", "How long someone is quiet before it counts"),
-                 ("reply_delay", "Reply delay (s)", "float", "Extra wait before the character answers")]
+                 ("silence_seconds", "Pause that ends speech (s)", "float",
+                  "How long someone is quiet before the character answers")]
         self.voice_fields += [Field(c, self.cfg, "voice", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
         self.button(s, "Save", lambda: self.save_fields(self.voice_fields), width=110).grid(
-            row=4, column=0, sticky="w", padx=32, pady=20)
+            row=5, column=0, sticky="w", padx=32, pady=20)
 
     # ---- drawing ------------------------------------------------------------
     def page_drawing(self, f):
