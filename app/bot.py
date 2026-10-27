@@ -170,10 +170,14 @@ class CharacterBot(discord.Client):
 
     async def on_ready(self):
         log(f"[discord] connected as {self.user} in {len(self.guilds)} server(s)")
-        for g in self.guilds:  # guild sync makes commands appear instantly
+        # Commands are global only. Older versions also registered a per-server copy, which made
+        # every command show up twice; remove those leftovers.
+        for g in self.guilds:
             try:
-                self.tree.copy_global_to(guild=g)
-                await self.tree.sync(guild=g)
+                if await self.tree.fetch_commands(guild=g):
+                    self.tree.clear_commands(guild=g)
+                    await self.tree.sync(guild=g)
+                    log(f"[discord] removed duplicate commands in {g.name}")
             except discord.HTTPException:
                 pass
         self.on_change()
