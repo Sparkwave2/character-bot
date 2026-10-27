@@ -64,7 +64,8 @@ The **Chat** page is a channel inside the app (`#local-chat`), for talking to ch
 - **+** attaches pictures or files. Ctrl+V pastes a picture, or files copied in Explorer. Pictures show as previews; click one for full size. Characters see the pictures, and they read small text files (up to 6,000 characters). Clicking a file opens it in a viewer with **Save as…** and **Open with…**.
 - Commands that need Discord are left out: reactions, profile pictures and GIFs. Drawing and `create_file` work, and their pictures and files appear in the chat.
 - There's no voice in the local chat. Voice chat is Discord-only.
-- `//text` is out of character, as on Discord. **Your name** sets the name characters see (default: your Windows user name). The chat and its attachments are saved in `localchat/`.
+- `//text` is out of character, as on Discord. Under **You**, set the name characters see (default: your Windows user name). Click the circle next to it to choose your picture and crop it, the same way as a character's. The chat, its attachments and your picture (`you.png`) are saved in `localchat/`.
+- Pictures in the window (chat previews, avatars, the character list) are loaded in the background, so a long chat full of images opens without freezing the app. They appear a moment later.
 
 ## Characters
 

@@ -7,8 +7,9 @@ import webbrowser
 from tkinter import filedialog
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
+from .imageload import circle, file_key, thumbnail
 from .localchat import LOCAL_FILES, is_image
 from .markdown import parse
 
@@ -19,44 +20,41 @@ COLORS = ["#5865f2", "#3ba55c", "#faa61a", "#ed4245", "#eb459e", "#7c5cff"]
 
 
 def round_avatar(path, name, size=AVATAR):
-    """A circular picture, or a coloured circle with the name's first letter."""
-    try:
-        im = Image.open(path).convert("RGBA")
-        w, h = im.size
-        s = min(w, h)
-        im = im.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2)).resize((size * 2, size * 2))
-    except Exception:
+    """A circular picture (PIL), or a coloured circle with the name's first letter. Runs on a worker."""
+    if path and os.path.isfile(path):
+        im = circle(path, size)
+    else:
         im = Image.new("RGBA", (size * 2, size * 2), COLORS[sum(map(ord, name or "?")) % len(COLORS)])
-        d = ImageDraw.Draw(im)
-        letter = (name or "?")[0].upper()
         try:
-            from PIL import ImageFont
-            f = ImageFont.truetype("segoeuib.ttf", size)
-        except Exception:
-            f = None
-        d.text((size, size), letter, fill="white", anchor="mm", font=f)
-    mask = Image.new("L", im.size, 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, *im.size), fill=255)
-    im.putalpha(mask)
-    return ImageTk.PhotoImage(im.resize((size, size), Image.LANCZOS))
+            font = ImageFont.truetype("segoeuib.ttf", size)
+        except OSError:
+            font = None
+        ImageDraw.Draw(im).text((size, size), (name or "?")[0].upper(), fill="white", anchor="mm", font=font)
+        im = circle(im, size)
+    return im.resize((size, size), Image.LANCZOS)
 
 
 class ChatView(tk.Frame):
-    def __init__(self, master, avatar_for):
-        """`avatar_for(name, is_char) -> path or None`."""
+    def __init__(self, master, avatar_for, loader):
+        """`avatar_for(name, is_char) -> path or None`; `loader` is the window's ImageLoader."""
         super().__init__(master, bg=BG)
-        self.avatar_for = avatar_for
+        self.avatar_for, self.loader = avatar_for, loader
         self.text = tk.Text(self, bg=BG, fg=TEXT, relief="flat", wrap="word", padx=16, pady=12, cursor="arrow",
                             insertwidth=0, highlightthickness=0, borderwidth=0, spacing1=1, spacing3=1)
-        bar = ctk.CTkScrollbar(self, command=self.text.yview)
+        bar = ctk.CTkScrollbar(self, command=self._scroll)
         self.text.configure(yscrollcommand=bar.set)
+        self.stick = True                # follow new messages until you scroll up
+        self.text.bind("<MouseWheel>", lambda e: self.after_idle(self._update_stick))
+        self.text.bind("<Configure>", lambda e: self.stick and self.text.see("end"))
         self.text.grid(row=0, column=0, sticky="nsew")
         bar.grid(row=0, column=1, sticky="ns")
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
         self.text.bind("<Key>", lambda e: None if (e.state & 4 and e.keysym.lower() in "ac") else "break")
-        self.images, self.avatars, self.fonts = [], {}, {}
+        self.images, self.avatars, self.fonts = [], {}, {}   # avatars: author -> (PhotoImage, is_char)
         self.n = 0                       # counter for one-off tags (links, spoilers, pictures)
+        self.gen = 0                     # bumped by clear(), so pictures still loading for old messages are dropped
+        self.waiting = ImageTk.PhotoImage(Image.new("RGBA", (240, 160), CODE_BG))
         self.last = None                 # (author, ts) of the last message, to group like Discord
         t = self.text
         t.tag_configure("body", lmargin1=INDENT, lmargin2=INDENT, spacing3=2)
@@ -95,6 +93,13 @@ class ChatView(tk.Frame):
         self.text.tag_configure(name, font=self._font(size + (-1 if mono else 0), bold, "i" in tags, mono))
         return name
 
+    def _scroll(self, *args):
+        self.text.yview(*args)
+        self._update_stick()
+
+    def _update_stick(self):
+        self.stick = self.text.yview()[1] > 0.995
+
     def _one_off(self):
         self.n += 1
         return f"x{self.n}"
@@ -109,9 +114,9 @@ class ChatView(tk.Frame):
         self.text.delete("1.0", "end")
         self.text.configure(state="disabled")
         self.images, self.last = [], None
+        self.gen += 1
 
     def add(self, msg):
-        at_bottom = self.text.yview()[1] > 0.98
         self.text.configure(state="normal")
         if msg["kind"] == "notice":
             self._markdown(msg["text"], ("notice",))
@@ -120,7 +125,7 @@ class ChatView(tk.Frame):
         else:
             self._message(msg)
         self.text.configure(state="disabled")
-        if at_bottom:
+        if self.stick:
             self.text.see("end")
 
     def _message(self, msg):
@@ -129,10 +134,12 @@ class ChatView(tk.Frame):
         self.last = (author, msg["ts"])
         if not grouped:
             if author not in self.avatars:
-                self.avatars[author] = round_avatar(self.avatar_for(author, msg["char"]), author)
+                # an empty picture now, filled in place once it's loaded
+                self.avatars[author] = (ImageTk.PhotoImage("RGBA", (AVATAR, AVATAR)), msg["char"])
+                self._load_avatar(author)
             if t.index("end-1c") != "1.0":
                 t.insert("end", "\n", ("head",))
-            t.image_create("end", image=self.avatars[author], padx=0, pady=0)
+            t.image_create("end", image=self.avatars[author][0], padx=0, pady=0)
             t.insert("end", "  ")
             t.insert("end", author, ("head", "charname") if msg["char"] else ("head",))
             if msg["char"]:
@@ -151,6 +158,17 @@ class ChatView(tk.Frame):
                 self._picture(path)
             else:
                 self._file(path, fname.split("_", 1)[-1])
+
+    def _load_avatar(self, author):
+        photo, is_char = self.avatars[author]
+        path = self.avatar_for(author, is_char)
+        self.loader.get(file_key(path, "avatar", author), lambda: round_avatar(path, author),
+                        lambda im: im and photo.paste(im))
+
+    def reload_avatars(self):
+        """After a profile picture changed: every message's picture updates in place."""
+        for author in self.avatars:
+            self._load_avatar(author)
 
     def _markdown(self, text, base):
         t = self.text
@@ -172,22 +190,25 @@ class ChatView(tk.Frame):
             t.insert("end", seg, tuple(names))
 
     def _picture(self, path):
-        try:
-            im = Image.open(path)
-            im.thumbnail(THUMB)
-            photo = ImageTk.PhotoImage(im.convert("RGBA"))
-        except Exception:
-            return self._file(path, os.path.basename(path))
-        self.images.append(photo)
-        tag = self._one_off()
-        t = self.text
+        """A grey box now; the thumbnail replaces it once a worker has made it."""
+        t, tag, name, gen = self.text, self._one_off(), self._one_off(), self.gen
         start = t.index("end-1c")
-        t.image_create("end", image=photo, pady=4)
+        t.image_create("end", image=self.waiting, pady=4, name=name)
         t.tag_add(tag, start, "end-1c")
         t.tag_add("body", start, "end-1c")
         t.insert("end", "\n", ("body",))
-        t.tag_bind(tag, "<Button-1>", lambda e: ImagePreview(self, path))
+        t.tag_bind(tag, "<Button-1>", lambda e: ImagePreview(self, path, self.loader))
         self._hand(tag)
+
+        def show(im):
+            if im is None or gen != self.gen:
+                return
+            photo = ImageTk.PhotoImage(im)
+            self.images.append(photo)
+            t.image_configure(name, image=photo)
+            if self.stick:
+                t.see("end")
+        self.loader.get(file_key(path, THUMB), lambda: thumbnail(path, THUMB), show)
 
     def _file(self, path, name):
         tag = self._one_off()
@@ -201,14 +222,19 @@ class ChatView(tk.Frame):
 class ImagePreview(ctk.CTkToplevel):
     """A picture at full size (shrunk to fit the screen); click or Esc closes it."""
 
-    def __init__(self, master, path):
+    def __init__(self, master, path, loader):
         super().__init__(master, fg_color="#000000")
         self.title(os.path.basename(path).split("_", 1)[-1])
-        im = Image.open(path)
-        im.thumbnail((int(self.winfo_screenwidth() * 0.85), int(self.winfo_screenheight() * 0.85)))
-        self.photo = ImageTk.PhotoImage(im.convert("RGBA"))
-        lab = tk.Label(self, image=self.photo, bg="#000000", cursor="hand2")
+        lab = tk.Label(self, text="Loading…", fg=MUTED, bg="#000000", cursor="hand2", width=40, height=10)
         lab.pack()
+        box = (int(self.winfo_screenwidth() * 0.85), int(self.winfo_screenheight() * 0.85))
+
+        def show(im):
+            if im is None:
+                return lab.configure(text="Couldn't open this picture.")
+            self.photo = ImageTk.PhotoImage(im)
+            lab.configure(image=self.photo, text="", width=0, height=0)
+        loader.get(file_key(path, box), lambda: thumbnail(path, box), show)
         bar = ctk.CTkFrame(self, fg_color="#000000")
         bar.pack(fill="x")
         ctk.CTkButton(bar, text="Open original", width=120, fg_color="#2b2d31",

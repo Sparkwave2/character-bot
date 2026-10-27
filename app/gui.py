@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageGrab
+from PIL import Image, ImageGrab
 
 from .characters import Character, slug
 from .chatview import ChatView
@@ -16,7 +16,9 @@ from .cropper import CropDialog, load_image
 from .draw import SDXL_MIN_BYTES, list_checkpoints
 from .engine import resolve_backend
 from .games import running_process_names
+from .imageload import ImageLoader, circle, file_key
 from .llm import VERBOSE_LOG
+from .localchat import USER_AVATAR, is_image
 from .log import log, log_queue
 from .models import CATALOG, TAGS, downloaded, fit, local_paths, recommended
 from .tools import TOOL_LABELS, TOOL_NAMES
@@ -38,19 +40,15 @@ def resolve_backend_safe(choice, engine):
     return resolve_backend(choice, engine.hw) if engine.hw else None
 
 
+def _thumb_bytes(data, box):
+    im = Image.open(io.BytesIO(data))
+    im.thumbnail(box)
+    return im.convert("RGBA")
+
+
 def circle_image(src, size):
-    """`src` is a path, file-like, PIL image or None (placeholder)."""
-    try:
-        im = src.convert("RGBA") if isinstance(src, Image.Image) else Image.open(src).convert("RGBA")
-    except Exception:
-        im = Image.new("RGBA", (size, size), "#2a2f40")
-    w, h = im.size
-    s = min(w, h)
-    im = im.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2)).resize((size * 2, size * 2))
-    mask = Image.new("L", im.size, 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, *im.size), fill=255)
-    im.putalpha(mask)
-    return ctk.CTkImage(im, size=(size, size))
+    """`src` is a PIL image already in memory, or None (placeholder). Files go through App.lazy_circle."""
+    return ctk.CTkImage(circle(src, size), size=(size, size))
 
 
 class Field:
@@ -115,6 +113,8 @@ class App(ctk.CTk):
         self.channel_vars = {}
         self.selected_char = None
         self.avatar_choice = None
+        self.loader = ImageLoader(self)
+        self.placeholders = {}        # size -> plain circle shown while a picture loads
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -167,6 +167,23 @@ class App(ctk.CTk):
                         hover_color=ACCENT_HOVER if n == name else CARD)
         if name == "Characters":
             self.refresh_char_list()
+
+    def placeholder(self, size):
+        if size not in self.placeholders:
+            self.placeholders[size] = circle_image(None, size)
+        return self.placeholders[size]
+
+    def lazy_circle(self, widget, path, size, still_wanted=lambda: True):
+        """Shows a plain circle on `widget` now and the round picture once a worker has loaded it.
+        `still_wanted()` is asked before showing it (the editor may show someone else by then)."""
+        widget.configure(image=self.placeholder(size))
+        if not path:
+            return
+
+        def show(im):
+            if im is not None and still_wanted():
+                widget.configure(image=ctk.CTkImage(im, size=(size, size)))
+        self.loader.get(file_key(path, "circle", size), lambda: circle(path, size), show)
 
     def header(self, parent, title, subtitle=""):
         ctk.CTkLabel(parent, text=title, font=ctk.CTkFont(size=24, weight="bold")).grid(
@@ -268,7 +285,7 @@ class App(ctk.CTk):
         main.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(0, weight=1)
-        self.chat_view = ChatView(main, self._chat_avatar)
+        self.chat_view = ChatView(main, self._chat_avatar, self.loader)
         self.chat_view.grid(row=0, column=0, sticky="nsew", padx=2, pady=(2, 0))
         self.chat_typing = ctk.CTkLabel(main, text="", text_color=MUTED, anchor="w", height=18,
                                         font=ctk.CTkFont(size=11, slant="italic"))
@@ -306,19 +323,58 @@ class App(ctk.CTk):
                                          ("Clear the chat", "clear")]):
             self.button(side, text, lambda c=cmd: self._chat_command(c), primary=False).grid(
                 row=3 + i, column=0, sticky="ew", padx=12, pady=(0, 6))
-        ctk.CTkLabel(side, text="Your name", text_color=MUTED, anchor="w").grid(row=6, column=0, sticky="w",
-                                                                                padx=16, pady=(8, 0))
+        me = ctk.CTkFrame(side, fg_color="transparent")
+        me.grid(row=6, column=0, sticky="ew", padx=12, pady=(8, 14))
+        me.grid_columnconfigure(1, weight=1)
+        self.chat_me = ctk.CTkButton(me, text="", image=self.placeholder(48), width=52, height=52,
+                                     fg_color="transparent", hover_color=CARD, command=self._chat_pick_avatar)
+        self.chat_me.grid(row=0, column=0, rowspan=2, padx=(0, 8))
+        self.lazy_circle(self.chat_me, USER_AVATAR if os.path.isfile(USER_AVATAR) else None, 48)
+        top = ctk.CTkFrame(me, fg_color="transparent")
+        top.grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(top, text="You", text_color=MUTED, anchor="w").pack(side="left")
+        ctk.CTkButton(top, text="Remove picture", width=10, height=20, fg_color="transparent", hover_color=CARD,
+                      text_color=MUTED, font=ctk.CTkFont(size=11),
+                      command=self._chat_remove_avatar).pack(side="right")
         self.chat_name = tk.StringVar(value=self.cfg["localchat"].get("user_name") or lc.user_name)
-        name = ctk.CTkEntry(side, textvariable=self.chat_name, height=32, fg_color=CARD, border_color=BORDER)
-        name.grid(row=7, column=0, sticky="ew", padx=12, pady=(2, 14))
+        name = ctk.CTkEntry(me, textvariable=self.chat_name, height=30, fg_color=CARD, border_color=BORDER,
+                            placeholder_text="Your name")
+        name.grid(row=1, column=1, sticky="ew")
         name.bind("<FocusOut>", lambda e: self._chat_set_name())
         name.bind("<Return>", lambda e: self._chat_set_name())
         self.chat_pending, self.chat_thumbs = [], []
         self.chat_shown, self.chat_cleared, self.chat_member_names = 0, None, None
 
     def _chat_avatar(self, name, is_char):
-        ch = self.core.characters.get(name) if is_char else None
+        if not is_char:          # the only person in the local chat is you
+            return USER_AVATAR if os.path.isfile(USER_AVATAR) else None
+        ch = self.core.characters.get(name)
         return ch.avatar_path() if ch else None
+
+    def _chat_pick_avatar(self):
+        p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.gif *.bmp"),
+                                                  ("All files", "*.*")])
+        if not p:
+            return
+        try:
+            im = load_image(p)
+        except Exception as e:
+            messagebox.showerror("Your picture", f"Couldn't open that image:\n{e}")
+            return
+        self._open_cropper(im, self._chat_set_avatar)
+
+    def _chat_set_avatar(self, im):
+        os.makedirs(os.path.dirname(USER_AVATAR), exist_ok=True)
+        im.save(USER_AVATAR, "PNG")
+        self.lazy_circle(self.chat_me, USER_AVATAR, 48)
+        self.chat_view.reload_avatars()
+        log("[gui] changed your local chat picture")
+
+    def _chat_remove_avatar(self):
+        if os.path.isfile(USER_AVATAR):
+            os.remove(USER_AVATAR)
+        self.lazy_circle(self.chat_me, None, 48)
+        self.chat_view.reload_avatars()
 
     def _chat_set_name(self):
         name = self.chat_name.get().strip()
@@ -390,14 +446,16 @@ class App(ctk.CTk):
         for i, (name, data) in enumerate(self.chat_pending):
             cell = ctk.CTkFrame(self.chat_pending_row, fg_color=CARD, corner_radius=8)
             cell.pack(side="left", padx=4, pady=4)
-            try:
-                im = Image.open(io.BytesIO(data))
-                im.thumbnail((72, 72))
-                img = ctk.CTkImage(im.convert("RGBA"), size=im.size)
-                self.chat_thumbs.append(img)
-                ctk.CTkLabel(cell, text="", image=img).pack(side="left", padx=6, pady=6)
-            except Exception:
-                ctk.CTkLabel(cell, text=f"📄 {name[:24]}").pack(side="left", padx=8, pady=6)
+            lab = ctk.CTkLabel(cell, text=f"📄 {name[:24]}")
+            lab.pack(side="left", padx=8, pady=6)
+            if is_image(name):      # the name shows until the thumbnail is ready
+
+                def show(im, lab=lab):
+                    if im is not None:
+                        img = ctk.CTkImage(im, size=im.size)
+                        self.chat_thumbs.append(img)
+                        lab.configure(text="", image=img)
+                self.loader.get(("pending", id(data)), lambda d=data: _thumb_bytes(d, (72, 72)), show)
             ctk.CTkButton(cell, text="✕", width=24, height=24, fg_color="transparent", hover_color="#3a1f29",
                           text_color=BAD, command=lambda n=i: self._chat_unattach(n)).pack(side="left", padx=(0, 4))
 
@@ -423,10 +481,12 @@ class App(ctk.CTk):
             win.destroy()
             self.core.submit(self.core.localchat.summon(name))
         for c in chars:
-            img = circle_image(c.avatar_path(), 32) if c.avatar_path() else circle_image(None, 32)
             text = f"  {c.name}" + (f"\n  {c.description[:60]}" if c.description else "")
-            ctk.CTkButton(lst, text=text, image=img, anchor="w", height=48, fg_color="transparent", hover_color=CARD,
-                          text_color="#e6e8ef", command=lambda n=c.name: choose(n)).pack(fill="x", padx=4, pady=2)
+            b = ctk.CTkButton(lst, text=text, image=self.placeholder(32), anchor="w", height=48,
+                              fg_color="transparent", hover_color=CARD, text_color="#e6e8ef",
+                              command=lambda n=c.name: choose(n))
+            b.pack(fill="x", padx=4, pady=2)
+            self.lazy_circle(b, c.avatar_path(), 32)
 
     def _refresh_chat(self):
         lc = self.core.localchat
@@ -449,10 +509,11 @@ class App(ctk.CTk):
             ctk.CTkLabel(self.chat_members, text="Nobody here yet.", text_color=MUTED).pack(anchor="w", padx=12)
         for n in names:
             c = self.core.characters.get(n)
-            img = circle_image(c.avatar_path() if c and c.avatar_path() else None, 28)
             row = ctk.CTkFrame(self.chat_members, fg_color="transparent")
             row.pack(fill="x", pady=2)
-            ctk.CTkLabel(row, text="  " + n, image=img, compound="left", anchor="w").pack(side="left", padx=6)
+            lab = ctk.CTkLabel(row, text="  " + n, image=self.placeholder(28), compound="left", anchor="w")
+            lab.pack(side="left", padx=6)
+            self.lazy_circle(lab, c.avatar_path() if c else None, 28)
             ctk.CTkButton(row, text="✕", width=26, height=26, fg_color="transparent", hover_color="#3a1f29",
                           text_color=BAD, command=lambda x=n: self._chat_command("dismiss", x)).pack(side="right")
 
@@ -805,7 +866,7 @@ class App(ctk.CTk):
         ed.grid(row=0, column=1, sticky="nsew")
         ed.grid_columnconfigure(1, weight=1)
         ed.grid_rowconfigure(4, weight=1)
-        self.avatar_label = ctk.CTkLabel(ed, text="", image=circle_image(None, 96))
+        self.avatar_label = ctk.CTkLabel(ed, text="", image=self.placeholder(96))
         self.avatar_label.grid(row=0, column=0, rowspan=2, padx=20, pady=20)
         self.char_name = tk.StringVar()
         ctk.CTkEntry(ed, textvariable=self.char_name, placeholder_text="Name", height=40, fg_color=CARD,
@@ -817,10 +878,14 @@ class App(ctk.CTk):
         self.button(ab, "Adjust crop", self.adjust_crop, primary=False, width=110).pack(side="left", padx=(8, 0))
         self.char_path_label = ctk.CTkLabel(ab, text="", text_color=MUTED)
         self.char_path_label.pack(side="left", padx=12)
+        drow = ctk.CTkFrame(ed, fg_color="transparent")
+        drow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 10))
+        drow.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(drow, text="Description", text_color=MUTED).grid(row=0, column=0, padx=(0, 10))
         self.char_desc = tk.StringVar()
-        ctk.CTkEntry(ed, textvariable=self.char_desc, height=34, fg_color=CARD, border_color=BORDER,
-                     placeholder_text="Short description (shown in /characters)").grid(
-            row=2, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 10))
+        ctk.CTkEntry(drow, textvariable=self.char_desc, height=34, fg_color=CARD, border_color=BORDER,
+                     placeholder_text="One line about them, shown in /characters and the summon list").grid(
+            row=0, column=1, sticky="ew")
         vrow = ctk.CTkFrame(ed, fg_color="transparent")
         vrow.grid(row=3, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 10))
         vrow.grid_columnconfigure(1, weight=1)
@@ -854,11 +919,12 @@ class App(ctk.CTk):
         for w in self.char_list.winfo_children():
             w.destroy()
         for ch in self.core.characters.characters.values():
-            img = circle_image(ch.avatar_path() or None, 28) if ch.avatar_path() else circle_image(None, 28)
             sel = self.selected_char and self.selected_char.path == ch.path
-            ctk.CTkButton(self.char_list, text="  " + ch.name, image=img, anchor="w", height=42, corner_radius=10,
-                          fg_color=CARD if sel else "transparent", hover_color=CARD, text_color="#e6e8ef",
-                          command=lambda c=ch: self.select_character(c)).pack(fill="x", padx=6, pady=2)
+            b = ctk.CTkButton(self.char_list, text="  " + ch.name, image=self.placeholder(28), anchor="w",
+                              height=42, corner_radius=10, fg_color=CARD if sel else "transparent",
+                              hover_color=CARD, text_color="#e6e8ef", command=lambda c=ch: self.select_character(c))
+            b.pack(fill="x", padx=6, pady=2)
+            self.lazy_circle(b, ch.avatar_path(), 28)
 
     def select_character(self, ch):
         self.selected_char = ch
@@ -870,7 +936,8 @@ class App(ctk.CTk):
         self.char_prompt.delete("1.0", "end")
         self.char_prompt.insert("1.0", ch.prompt)
         self.char_path_label.configure(text=os.path.basename(ch.path))
-        self.avatar_label.configure(image=circle_image(ch.avatar_path(), 96) if ch.avatar_path() else circle_image(None, 96))
+        self.lazy_circle(self.avatar_label, ch.avatar_path(), 96,
+                         still_wanted=lambda: self.selected_char is ch and self.avatar_choice is None)
         self.refresh_char_list()
 
     def new_character(self):
@@ -883,7 +950,7 @@ class App(ctk.CTk):
         self.char_prompt.delete("1.0", "end")
         self.char_prompt.insert("1.0", "You are ... Describe personality, speaking style, backstory and boundaries here.")
         self.char_path_label.configure(text="(new)")
-        self.avatar_label.configure(image=circle_image(None, 96))
+        self.avatar_label.configure(image=self.placeholder(96))
         if hasattr(self, "char_list"):
             self.refresh_char_list()
 
@@ -910,10 +977,10 @@ class App(ctk.CTk):
             return
         self._open_cropper(im)
 
-    def _open_cropper(self, im):
+    def _open_cropper(self, im, on_done=None):
         colors = {"bg": BG, "panel": PANEL, "card": CARD, "border": BORDER, "muted": MUTED,
                   "accent": ACCENT, "accent_hover": ACCENT_HOVER}
-        CropDialog(self, im, self._set_avatar, colors)
+        CropDialog(self, im, on_done or self._set_avatar, colors)
 
     def _set_avatar(self, im):
         self.avatar_choice = im  # cropped PIL image, written on Save

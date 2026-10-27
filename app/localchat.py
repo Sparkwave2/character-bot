@@ -20,6 +20,7 @@ from .media import encode_image
 LOCAL_DIR = os.path.join(ROOT, "localchat")
 LOCAL_FILES = os.path.join(LOCAL_DIR, "files")
 TRANSCRIPT = os.path.join(LOCAL_DIR, "chat.json")
+USER_AVATAR = os.path.join(LOCAL_DIR, "you.png")    # your picture in the local chat (Chat page)
 LOCAL_ID = 1                 # the channel id in the characters' memory (Discord ids are far bigger)
 MAX_MESSAGES = 500
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
