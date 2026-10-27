@@ -85,6 +85,7 @@ Characters can also act through MCP-style tool calls (OpenAI tool schemas, which
 | `add_reaction(message_ref, emoji)` | React to message `#N`. Several emojis (`😂🔥`) become separate reactions |
 | `leave_channel(reason)` | The character leaves on its own (after sending any goodbye text), and the bot posts a 👋 notice |
 | `stay_silent()` | Skip replying |
+| `get_current_time()` | Check the date and time |
 | `view_profile_picture(name)` | Look at someone's avatar before replying (can be turned off under Behavior) |
 | `web_search(query)`, `read_webpage(url)` | Search DuckDuckGo and read a page as text |
 | `read_note(name)`, `write_note(name, text, mode)` | The character's personal Markdown notebook in `notes/<character>/`. `mode` is append (default), replace or delete; the list of notes is already in the prompt |
@@ -102,7 +103,7 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 - **One speaker at a time.** A global lock means only one character generates at a time. The program picks who replies in this order: whoever was replied to, then whoever was named, then whoever spoke most recently, then a random character.
 - **Characters talk to each other.** Messages from characters are visible to the other characters. Characters can answer each other, up to the *Max character chain* limit, so they can't loop forever.
 - **Memory carries across channels.** Each character has one memory covering every channel it has been in. Messages from other channels are tagged `in #channel`. Memory is saved to `memory.json` and survives restarts.
-- **Small fixed overhead.** The rules and command definitions are sent with every prompt, so they're kept short: about 1,100 tokens with every command on. The current date and time are added at the end of each prompt, so characters always know it without a command. Putting it at the end keeps llama-server's prompt cache valid.
+- **Small fixed overhead.** The rules and command definitions are sent with every prompt, so they're kept short: about 1,100 tokens with every command on.
 - **Bigger context, same VRAM budget.** The default context is 32,768 tokens with an 8-bit KV cache (Model → *Context memory type* `q8_0`), which uses half the memory of `f16`. For Qwen3-VL-30B-A3B that's about 49 KB per token, about 1.6 GB at 32k.
 - **Context scrolls automatically.** When building a prompt, the newest messages are kept until the context budget (`ctx_size − max_tokens`) is full. Older messages are dropped permanently. Only the most recent *N* images are sent as images; older ones become `[image]`.
 - **`//` messages are ignored.** A message starting with `//` is out of character: characters never see it and it never triggers a reply.

@@ -23,6 +23,7 @@ ALL_TOOLS = [
     _tool("leave_channel", "Leave the channel (say goodbye in your reply).", optional=("reason",),
           reason=("string", None)),
     _tool("stay_silent", "Don't reply. Only when the message is between others and not about you.",),
+    _tool("get_current_time", "Check the current date and time.",),
     _tool("read_note", "Read one of your notes.", name=("string", None)),
     _tool("write_note", "Save something to remember (facts about people, plans, promises) in your notebook.",
           optional=("mode",), name=("string", "e.g. people.md"), text=("string", None),
@@ -39,7 +40,8 @@ TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 # what each switch on the Behavior page says, and whether it is on by default
 TOOL_LABELS = {
     "add_reaction": ("React with emojis", True), "leave_channel": ("Leave on their own", True),
-    "stay_silent": ("Stay silent", True), "read_note": ("Read notes", True),
+    "stay_silent": ("Stay silent", True), "get_current_time": ("Check the time", True),
+    "read_note": ("Read notes", True),
     "write_note": ("Write and delete notes", True),
     "view_profile_picture": ("View profile pictures", True), "web_search": ("Search the web", True),
     "read_webpage": ("Read web pages", True), "draw_image": ("Draw pictures (Drawing page)", False),

@@ -17,7 +17,6 @@ from discord.ext.voice_recv.rtp import OPUS_SILENCE
 
 from .agent import run_turn
 from .log import log
-from .bot import now_note
 from .tools import tools_tokens
 from .tts import TTSError, speakable
 
@@ -230,7 +229,6 @@ class VoiceSession:
             t = time.monotonic()
             msgs = self.core.memory.build_messages(self.char.name, system, self.channel.id, budget,
                                                    int(b["image_token_cost"]), int(b["max_images_in_context"]))
-            msgs.append(now_note())
             log(f"[voice] {self.char.name} is thinking in {self.channel_label}")
             llm.peak_tokens, llm.work = 0, {}
             res = await run_turn(llm, msgs, tools, self.char.name,

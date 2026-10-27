@@ -39,6 +39,7 @@ NOTEBOOK_LINE = """Your notebook lasts forever, even after chat history is forgo
 # (command, when to use it)
 COMMAND_HINTS = [
     ("add_reaction", "react to messages that deserve it"),
+    ("get_current_time", "check the time instead of guessing it"),
     ("web_search", "search instead of guessing facts"),
     ("draw_image", "draw when asked"),
     ("post_gif", "post a GIF now and then"),
@@ -47,11 +48,6 @@ COMMAND_HINTS = [
 
 TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|context|join|leave)\b[ \t]*([^\n]*)",
                           re.I)
-
-
-def now_note():
-    """The time goes last, not in the system prompt, so llama-server can reuse its cached prompt."""
-    return {"role": "user", "content": f"[system] {current_time()}"}
 
 
 def meter_bar(used, size, width=16):
@@ -924,7 +920,6 @@ class CharacterBot(discord.Client):
         budget -= tools_tokens(tools)
         msgs = self.core.memory.build_messages(char.name, system, channel.id, budget,
                                                int(b["image_token_cost"]), int(b["max_images_in_context"]))
-        msgs.append(now_note())
         log(f"[discord] {char.name} is thinking in #{channel.name} ({len(msgs) - 1} context entries)")
 
         typing = asyncio.create_task(self._typing(channel)) if b.get("typing_indicator") else None
@@ -1052,7 +1047,7 @@ class CharacterBot(discord.Client):
             log(f"[web] {char.name} read {str(args.get('url'))[:100]}")
             return await read_webpage(self.http_session, args.get("url"))
 
-        return {"read_note": nb.read, "write_note": logged(nb.write, "wrote"),
+        return {"get_current_time": current_time, "read_note": nb.read, "write_note": logged(nb.write, "wrote"),
                 "web_search": search, "read_webpage": read_page,
                 **({"draw_image": draw, "post_gif": gif} if channel and info else {})}
 
