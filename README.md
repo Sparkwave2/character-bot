@@ -94,6 +94,12 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 - **Reactions** are recorded as events the characters can see, but a reaction never triggers a reply.
 - **Identity.** Characters only see people's display names, plus profile pictures if they ask through the tool. No other profile details are passed to the model.
 - **Voice messages.** Discord voice messages are transcribed with the same local Whisper model as voice chat, so characters see `[voice message] what was said`. This can be turned off under Behavior.
+- **Links people post.** Up to two linked pages per message are opened. The loaded model writes a short description, which characters see as `[link …: title — what the page says]`. Characters can use `read_webpage` to read the whole page. Dead links are marked as dead.
+- **Links characters post.** Before a message goes out, every link in it is opened:
+  - A dead link (404, a site that doesn't exist, or a "page not found" page) is sent back so the character can fix it. If the link is still in the rewrite, it's removed from the message.
+  - An image link is shown to the character as a picture, so it can confirm that's what it meant.
+  - Links that can't be verified (403, rate limits, timeouts) are let through.
+  - Both of these can be turned off under Behavior.
 - **Images.** Characters see uploaded images, stickers, embed images and pasted image links. Links without an image extension are fetched only if the server answers with an `image/*` content type.
 - **Voice chat.** Each speaker's audio is collected until they pause (*Pause that ends speech* on the Voice page). Whisper then transcribes it, the character answers, and ElevenLabs speaks the answer. What's said in voice goes into the character's memory, tagged `in #General (voice)`, so the character remembers it in text chat too. Emojis, links and `*actions*` are left out of the spoken reply. Discord's voice encryption (DAVE) is handled for both sending and receiving.
 - **Games.** Add process names (for example `eldenring.exe`) on the **Games** page. While any of them is running, llama-server is stopped, which frees the VRAM. It reloads automatically when the game closes. While the model is unloaded, characters stay quiet.

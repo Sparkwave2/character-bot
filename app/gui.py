@@ -725,12 +725,15 @@ class App(ctk.CTk):
                  ("history_limit", "Stored messages per character", "int", "Hard cap; context trimming happens anyway"),
                  ("typing_indicator", "Show typing indicator", "bool", "")]
         self.behavior_fields = [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
-        c = self.card(s, 3, "Images and audio")
+        c = self.card(s, 3, "Images, audio and links")
         specs = [("max_images_in_context", "Images kept in context", "int", "Older images become [image]"),
                  ("image_token_cost", "Tokens per image (estimate)", "int", "Used for context trimming"),
                  ("max_image_side", "Max image size (px)", "int", "Images are downscaled"),
                  ("fetch_image_links", "Read pasted image links", "bool", ""),
-                 ("voice_messages", "Characters hear voice messages", "bool", "Transcribed locally with Whisper")]
+                 ("voice_messages", "Characters hear voice messages", "bool", "Transcribed locally with Whisper"),
+                 ("link_previews", "Characters read posted links", "bool", "The model describes linked pages"),
+                 ("check_links", "Check links before characters post them", "bool",
+                  "Dead links are refused; image links are shown to the character first")]
         self.behavior_fields += [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
         c = self.card(s, 4, "Commands characters can use")
         for i, name in enumerate(TOOL_NAMES):

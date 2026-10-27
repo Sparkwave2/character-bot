@@ -48,6 +48,8 @@ DEFAULTS = {
         "max_image_side": 896,      # images are downscaled to this
         "fetch_image_links": True,
         "voice_messages": True,     # Discord voice messages are transcribed with Whisper
+        "link_previews": True,      # linked pages are opened and described by the model
+        "check_links": True,        # characters' links are opened before posting; dead ones are refused
         "history_limit": 400,       # hard cap on stored messages per channel
         "typing_indicator": True,
     },

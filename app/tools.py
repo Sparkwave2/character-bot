@@ -75,7 +75,8 @@ WEB_TOOLS = [
             "required": ["query"]}}},
     {"type": "function", "function": {
         "name": "read_webpage",
-        "description": "Read the text of a web page, e.g. a link from search results or one someone posted.",
+        "description": "Read the whole text of a web page, e.g. a link from search results or one someone posted "
+                       "(posted links only come with a short description). Image links show you the picture.",
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "description": "Full http(s) link"}},
             "required": ["url"]}}},

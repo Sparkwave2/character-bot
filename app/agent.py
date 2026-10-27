@@ -77,10 +77,12 @@ def describe_action(name, args):
     }.get(name, lambda: None)()   # reactions and leaving are recorded as events already
 
 
-async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, handlers=None):
+async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, handlers=None, review=None):
     """`on_react(args) -> str` performs a reaction and returns a result line.
     `on_pfp(name) -> list[content parts]` returns the picture (or a text part).
-    `handlers` maps other command names to `fn(args) -> str` or an async one (notes, time, web)."""
+    `handlers` maps other command names to `fn(args) -> str` or an async one (notes, time, web).
+    `review(text) -> (note or None, [content parts])` looks at the finished message once; a note
+    (e.g. "this link is dead") sends it back for one rewrite."""
     handlers = handlers or {}
     available = {t["function"]["name"] for t in tools}
     res = TurnResult()
@@ -91,22 +93,30 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
         if text:
             texts.append(text)
         if not calls:
-            # one chance to actually do what it only wrote about
-            claims = [] if checked or round_no >= MAX_ROUNDS - 2 or not text else \
-                unfulfilled_claims(text, {n for n, _ in res.actions}, available)
-            checked = True
-            if not claims:
+            # one look before posting: commands it only wrote about, and the links it wants to post
+            if checked or round_no >= MAX_ROUNDS - 2 or not text:
                 break
-            log(f"[tools] {char_name} wrote {claims[0][1]!r} without using {claims[0][0]}; asking again")
+            checked = True
+            claims = unfulfilled_claims(text, {n for n, _ in res.actions}, available)
+            note, pictures = await review(text) if review else (None, [])
+            if not claims and not note:
+                break
+            notes = ["[system] Your message has not been posted yet."]
+            if claims:
+                log(f"[tools] {char_name} wrote {claims[0][1]!r} without using {claims[0][0]}; asking again")
+                said = "; ".join(f'"{p}" ({c})' for c, p in claims)
+                notes.append(f"You wrote {said}, but writing it doesn't do anything: you didn't use the "
+                             "command, so it didn't happen. If you meant it, use the command now.")
+            if note:
+                notes.append(note)
+            notes.append("Then write your whole message again (it replaces the one above)"
+                         + (", without describing commands you didn't use." if claims else "."))
             texts.pop()
             fallback = text
             msgs.append({"role": "assistant", "content": reply.get("content") or text})
-            said = "; ".join(f'"{p}" ({c})' for c, p in claims)
-            msgs.append({"role": "user", "content":
-                         f"[system] Your message has not been posted yet. You wrote {said}, but writing it "
-                         "doesn't do anything: you didn't use the command, so it didn't happen. If you meant "
-                         "it, use the command now. Then write your whole message again (it replaces the one "
-                         "above), without describing commands you didn't use."})
+            body = " ".join(notes)
+            msgs.append({"role": "user", "content": [{"type": "text", "text": body}] + pictures
+                         if pictures else body})
             continue
         res.actions += [(n, a) for n, a, _ in calls]
         names = {n for n, _, _ in calls}

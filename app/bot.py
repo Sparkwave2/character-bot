@@ -13,11 +13,11 @@ from .config import load_state, save_state
 from .log import log
 from .draw import DrawError
 from .gifs import GifError, search_gif
-from .media import encode_image, fetch_image, images_from_message
+from .media import IMG_EXT_RE, encode_image, fetch_image, images_from_message
 from .agent import describe_action, run_turn
 from .notes import Notebook, current_time
-from .tools import tool_list, tool_text_instructions
-from .web import read_webpage, web_search
+from .tools import THINK_RE, tool_list, tool_text_instructions
+from .web import fetch_link, links_in, preview, read_webpage, remove_link, web_search
 
 SYSTEM_RULES = """You are roleplaying as {name} in a Discord server, chatting alongside real people and possibly other AI characters.
 
@@ -525,6 +525,9 @@ class CharacterBot(discord.Client):
         if with_images and self.behavior.get("voice_messages", True):
             heard = await self._hear_voice_messages(message)
             text = (text + "\n" + heard).strip() if heard else text
+        if with_images and not char_name and self.behavior.get("link_previews", True):
+            seen = await self._link_previews(message.content or "")
+            text = (text + "\n" + seen).strip() if seen else text
         author = char_name or message.author.display_name
         self.names[message.author.id] = author
         return mem.new_entry(msg_id=message.id, channel_id=message.channel.id,
@@ -532,6 +535,86 @@ class CharacterBot(discord.Client):
                              author_id=message.author.id, char_name=char_name, text=text,
                              images=images, reply_ref=reply_ref,
                              ts=message.created_at.timestamp())
+
+    async def _link_previews(self, content, limit=2):
+        """A short look at the web pages linked in a message (images are handled as images)."""
+        urls = [u for u in links_in(content) if not IMG_EXT_RE.search(u)][:limit]
+        if not urls:
+            return ""
+        links = await asyncio.gather(*(fetch_link(self.http_session, u) for u in urls))
+        lines = []
+        for lk in links:
+            log(f"[web] link {lk.url[:80]}: {lk.kind}{' (' + lk.reason + ')' if lk.reason else ''}")
+            if lk.kind == "page":
+                lines.append(await self._describe_page(lk))
+            elif lk.kind != "image":
+                lines.append(preview(lk))
+        return "\n".join(x for x in lines if x)
+
+    def _link_checker(self, char, tools):
+        """(review, finalize) for a character's message: every link is opened before it's posted.
+        Dead ones go back to the character once, image links are shown to it to confirm, and any
+        dead link still left afterwards is taken out."""
+        cache = {}
+        can_search = any(t["function"]["name"] == "web_search" for t in tools)
+
+        async def check(u):
+            if u not in cache:
+                cache[u] = await fetch_link(self.http_session, u, int(self.behavior["max_image_side"]))
+            return cache[u]
+
+        async def review(text):
+            urls = links_in(text)[:6]
+            if not urls:
+                return None, []
+            links = await asyncio.gather(*(check(u) for u in urls))
+            dead = [lk for lk in links if lk.ok is False]
+            pics = [lk for lk in links if lk.kind == "image"]
+            notes, parts = [], []
+            if dead:
+                log(f"[web] {char.name} tried to post dead link(s): {', '.join(lk.url[:80] for lk in dead)}")
+                notes.append("These links don't work, so they can't be posted: "
+                             + "; ".join(f"{lk.url} ({lk.reason})" for lk in dead) + ". Leave them out"
+                             + (", or use web_search to find a real one." if can_search else "."))
+            if pics:
+                log(f"[web] showing {char.name} the image link(s) it wants to post")
+                notes.append("Below is what your image link(s) actually show. If a picture is what you meant, "
+                             "keep its link; if not, change or remove it.")
+                for lk in pics:
+                    parts += [{"type": "text", "text": lk.url}, {"type": "image_url", "image_url": {"url": lk.image}}]
+            return " ".join(notes) or None, parts
+
+        async def finalize(text):
+            for u in links_in(text):
+                if (await check(u)).ok is False:
+                    log(f"[web] removed a dead link from {char.name}'s message: {u[:100]}")
+                    text = remove_link(text, u)
+            return text
+
+        return review, finalize
+
+    async def _describe_page(self, link):
+        """Have the loaded model sum up a linked page; falls back to the first lines of its text."""
+        llm, lc = self.core.llm, self.cfg["llm"]
+        if not llm.ready or not link.text.strip():
+            return preview(link)
+        room = max(2000, min(16000, (int(lc["ctx_size"]) - int(lc["max_tokens"]) - 600) * 3))
+        msgs = [{"role": "system", "content":
+                 "You describe web pages for people in a chat who haven't opened them. In 2-4 plain sentences, "
+                 "say what the page is and what it actually contains (key facts, names, numbers, the gist of "
+                 "an article). No preamble, no opinions."},
+                {"role": "user", "content": f"URL: {link.url}\nTitle: {link.title}\n\n{link.text[:room]}"}]
+        try:
+            reply = await llm.chat(msgs)
+        except Exception as e:
+            log(f"[web] couldn't describe {link.url[:80]}: {e}", level="warn")
+            return preview(link)
+        text = THINK_RE.sub("", reply.get("content") or "")
+        text = re.sub(r"\s+", " ", text.split("</think>")[-1]).strip()
+        if not text:
+            return preview(link)
+        log(f"[web] described {link.url[:80]}: {text[:100]}")
+        return f"[link {link.url}: {link.title or 'web page'} — {text[:700]}]"
 
     async def _hear_voice_messages(self, message):
         """Discord voice messages (Ogg Opus attachments) -> "[voice message] what was said"."""
@@ -784,11 +867,14 @@ class CharacterBot(discord.Client):
         log(f"[discord] {char.name} is thinking in #{channel.name} ({len(msgs) - 1} context entries)")
 
         typing = asyncio.create_task(self._typing(channel)) if b.get("typing_indicator") else None
+        review, finalize = self._link_checker(char, tools) if b.get("check_links", True) else (None, None)
         try:
             res = await run_turn(llm, msgs, tools, char.name,
                                  on_react=lambda a: self._react(channel, char.name, a),
                                  on_pfp=lambda name: self._profile_picture(channel, name),
-                                 handlers=self._local_tools(char, channel, info))
+                                 handlers=self._local_tools(char, channel, info), review=review)
+            if finalize and res.text:
+                res.text = await finalize(res.text)
         finally:
             if typing:
                 typing.cancel()

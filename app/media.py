@@ -8,7 +8,7 @@ from PIL import Image
 
 from .log import log
 
-URL_RE = re.compile(r"https?://[^\s<>()\"']+", re.I)
+URL_RE = re.compile(r"https?://(?:[^\s<>()\"']|\([^\s<>()\"']*\))+", re.I)
 IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|webp|bmp)(\?|$)", re.I)
 MAX_BYTES = 12 * 1024 * 1024
 
