@@ -1,0 +1,15 @@
+# environment and downloads
+.venv/
+__pycache__/
+*.pyc
+llama.cpp/
+models/
+
+# your data and secrets (bot token, API keys) - not code
+config.json
+state.json
+memory.json
+*.tmp
+characters/
+notes/
+images/
