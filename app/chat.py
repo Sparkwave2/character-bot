@@ -20,6 +20,8 @@ from .web import fetch_link, links_in, preview, read_webpage, remove_link, web_s
 FILES_DIR = os.path.join(ROOT, "files")
 VOICE_EXCLUDED = ("add_reaction", "view_profile_picture", "draw_image", "post_gif", "create_file")
 CODE_FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.S)
+ANY_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)\n?```", re.S)
+PROSE_FILES = ("md", "markdown", "txt", "html", "htm", "tex")   # ``` can be real content in these
 
 # Sent with every prompt, so every sentence here costs context: keep it short.
 SYSTEM_RULES = """You are {name}, chatting in a Discord server with real people and maybe other AI characters.
@@ -47,8 +49,25 @@ COMMAND_HINTS = [
     ("create_file", "make a file when someone wants one"),
     ("leave_channel", "leave_channel when you're told to go and agree"),
 ]
-FILE_PROMPT = ("[system] You are making the file {name} ({about}). Write its complete contents now. Output only "
-               "what goes in the file: no explanation before or after it and no ``` fence around it.")
+FILE_PROMPT = ("[system] Now write the file {name} ({about}). Your answer is saved as the file exactly as you "
+               "write it, so write only its complete contents, between <file> and </file>: no commands, no "
+               "explanation, no ``` fence.")
+FILE_START, FILE_END = '<file name="{name}">\n', "</file>"
+
+
+def file_contents(text, ext):
+    """The file out of the model's answer: without the <file> markers, and without ``` fences or anything
+    the model wrote around them (in code files only; Markdown may contain real fences)."""
+    text = THINK_RE.sub("", text or "").split("</think>")[-1]
+    text = re.sub(r"^\s*<file[^>]*>\n?", "", text).split(FILE_END)[0]
+    m = CODE_FENCE_RE.match(text)
+    if m:
+        text = m.group(1)
+    elif ext not in PROSE_FILES:
+        blocks = ANY_FENCE_RE.findall(text)
+        if blocks:
+            text = max(blocks, key=len)
+    return text.strip("\n") + "\n"
 
 
 def safe_filename(name):
@@ -414,12 +433,12 @@ class ChatLogic:
             made.append(name)
             about = str(args.get("about") or args.get("description") or "what was asked for").strip()[:300]
             log(f"[files] {char.name} is writing {name}: {about[:100]}")
-            ask = {"role": "user", "content": FILE_PROMPT.format(name=name, about=about)}
-            reply = await self.core.llm.chat((msgs or [])[:] + [ask],
+            # the answer is started for the model (a prefill), so it can only go on with the file itself
+            ask = [{"role": "user", "content": FILE_PROMPT.format(name=name, about=about)},
+                   {"role": "assistant", "content": FILE_START.format(name=name)}]
+            reply = await self.core.llm.chat((msgs or [])[:] + ask, stop=[FILE_END],
                                              max_tokens=int(self.cfg["files"].get("max_tokens") or 4000))
-            text = THINK_RE.sub("", reply.get("content") or "").split("</think>")[-1]
-            m = CODE_FENCE_RE.match(text)
-            text = (m.group(1) if m else text).strip("\n") + "\n"
+            text = file_contents(reply.get("content"), ext)
             if not text.strip():
                 return "The file came out empty; nothing was posted."
             folder = os.path.join(FILES_DIR, char.key)

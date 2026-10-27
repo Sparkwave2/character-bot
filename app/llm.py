@@ -236,10 +236,11 @@ class LlamaServer:
         return "(llama-server couldn't render the chat template; this is the JSON that was sent)\n" + \
             json.dumps(_without_image_data(req), ensure_ascii=False, indent=1)
 
-    async def chat(self, messages, tools=None, tool_choice="auto", max_tokens=None):
+    async def chat(self, messages, tools=None, tool_choice="auto", max_tokens=None, stop=None):
         """Returns the raw `message` dict of the first choice. tool_choice="required" makes the
         model call at least one tool (llama-server enforces it with a grammar). `max_tokens`
-        overrides the reply limit (files are longer than chat messages)."""
+        overrides the reply limit (files are longer than chat messages); `stop` ends the reply at
+        any of these strings. A last message from the assistant is continued (a prefill)."""
         if not self.ready:
             raise RuntimeError("model is not loaded")
         c = self.cfg["llm"]
@@ -252,6 +253,8 @@ class LlamaServer:
             "max_tokens": max_tokens or c["max_tokens"],
             "stream": False,
         }
+        if stop:
+            body["stop"] = stop
         if tools and c.get("use_native_tools", True):
             body["tools"] = tools
             body["tool_choice"] = tool_choice
