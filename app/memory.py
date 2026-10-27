@@ -150,9 +150,9 @@ class MemoryBank:
 
     # ---- prompt building ----------------------------------------------------
     def build_messages(self, char_name, system_prompt, current_channel_id, budget,
-                       image_cost, max_images):
+                       image_cost, max_images, dry_run=False):
         """Return OpenAI-style message list fitting in `budget` tokens.
-        Drops entries that no longer fit from the memory permanently."""
+        Drops entries that no longer fit from the memory permanently (unless `dry_run`)."""
         dq = self.memories.get(char_name.lower(), deque())
         remaining = budget - est_tokens(system_prompt)
         picked, images_left = [], max_images
@@ -171,7 +171,7 @@ class MemoryBank:
             remaining -= cost
             images_left -= len(use_imgs)
             picked.append((e, text, use_imgs))
-        if cut_index:
+        if cut_index and not dry_run:
             for _ in range(cut_index):
                 dq.popleft()
             self.dirty = True
@@ -195,6 +195,18 @@ class MemoryBank:
         if msgs[-1]["role"] == "assistant":  # the server would treat it as a prefill
             msgs.append({"role": "user", "content": "[system] Continue the conversation naturally."})
         return msgs
+
+    @staticmethod
+    def count_tokens(msgs, image_cost):
+        """Estimated prompt size of a message list (same estimate the trimming uses)."""
+        n = 0
+        for m in msgs:
+            c = m.get("content")
+            if isinstance(c, list):
+                n += sum(image_cost if p.get("type") == "image_url" else est_tokens(p.get("text", "")) for p in c)
+            else:
+                n += est_tokens(c or "")
+        return n
 
     def render(self, e, viewer, current_channel_id):
         where = "" if e.channel_id == current_channel_id else f" in #{e.channel_name}"

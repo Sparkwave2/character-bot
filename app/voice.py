@@ -187,9 +187,11 @@ class VoiceSession:
             msgs = self.core.memory.build_messages(self.char.name, system, self.channel.id, budget,
                                                    int(b["image_token_cost"]), int(b["max_images_in_context"]))
             log(f"[voice] {self.char.name} is thinking in {self.channel_label}")
+            llm.peak_tokens = 0
             res = await run_turn(llm, msgs, tools, self.char.name,
                                  on_react=lambda a: _no_reactions(),
                                  handlers=self.bot._local_tools(self.char))
+            self.bot.note_usage(self.char.name)
         self.bot._remember_actions(self.char, self.channel.id, self.channel_label, res)
         text = "" if res.silent else speakable(res.text)
         if text and not self.closed:

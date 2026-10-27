@@ -2,6 +2,7 @@
 import io
 import os
 import queue
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -235,7 +236,14 @@ class App(ctk.CTk):
         c = self.card(f, 3, "Summoned characters")
         self.summoned_box = ctk.CTkLabel(c, text="", justify="left", anchor="w", text_color="#d6d9e4")
         self.summoned_box.grid(row=1, column=0, columnspan=3, sticky="w", padx=16, pady=(6, 16))
-        c = self.card(f, 4, "Quick start")
+        c = self.card(f, 4, "Context")
+        self.ctx_box = ctk.CTkFrame(c, fg_color="transparent")
+        self.ctx_box.grid(row=1, column=0, columnspan=3, sticky="ew", padx=16, pady=(6, 14))
+        self.ctx_box.grid_columnconfigure(1, weight=1)
+        self.ctx_rows, self.ctx_data, self.ctx_next = {}, None, 0
+        self.ctx_empty = ctk.CTkLabel(self.ctx_box, text="", text_color=MUTED, anchor="w")
+        self.ctx_empty.grid(row=0, column=0, columnspan=3, sticky="w")
+        c = self.card(f, 5, "Quick start")
         ctk.CTkLabel(c, justify="left", anchor="w", text_color=MUTED, text=(
             "1. Model → pick your Qwen-VL GGUF and its mmproj file, then Load (llama.cpp installs itself).\n"
             "2. Discord → paste your bot token, Connect, tick the channels the bot may speak in.\n"
@@ -910,6 +918,45 @@ class App(ctk.CTk):
             self.summoned_box.configure(text="Connect to Discord to see summoned characters.")
             self._channels_loaded = False
         self.side_status.configure(text=f"Model: {'suspended' if llm.suspended_by else llm.state}\nDiscord: {ds}")
+        self._refresh_context(bot if ds == "connected" else None)
+
+    def _refresh_context(self, bot):
+        """Context meter: one bar per summoned character (computed on the core loop every 3 s)."""
+        now = time.monotonic()
+        if bot and now >= self.ctx_next:
+            self.ctx_next = now + 3
+
+            async def report():
+                return bot.context_report()
+            fut = self.core.submit(report())
+            fut.add_done_callback(lambda f: setattr(self, "ctx_data", f.result() if not f.exception() else []))
+        rows = self.ctx_data if bot else None
+        names = [(r[0], r[1]) for r in rows or []]
+        if names != list(self.ctx_rows):
+            for widgets in self.ctx_rows.values():
+                for w in widgets:
+                    w.destroy()
+            self.ctx_rows = {}
+            for i, key in enumerate(names):
+                lab = ctk.CTkLabel(self.ctx_box, text=f"{key[0]}  ·  #{key[1]}", anchor="w", width=200)
+                lab.grid(row=i, column=0, sticky="w", pady=3)
+                bar = ctk.CTkProgressBar(self.ctx_box, height=10, progress_color=ACCENT)
+                bar.grid(row=i, column=1, sticky="ew", padx=12, pady=3)
+                num = ctk.CTkLabel(self.ctx_box, text="", text_color=MUTED, anchor="e", width=260)
+                num.grid(row=i, column=2, sticky="e", pady=3)
+                self.ctx_rows[key] = (lab, bar, num)
+        if not names:
+            self.ctx_empty.configure(text="Connect to Discord and summon a character to see its context."
+                                     if not bot else "Nobody summoned yet." if rows is not None else "…")
+            self.ctx_empty.grid()
+            return
+        self.ctx_empty.grid_remove()
+        for name, ch, est, last, size in rows:
+            _lab, bar, num = self.ctx_rows[(name, ch)]
+            frac = min(1.0, est / max(size, 1))
+            bar.set(frac)
+            bar.configure(progress_color=BAD if frac > 0.9 else WARN if frac > 0.75 else ACCENT)
+            num.configure(text=f"≈{est:,} / {size:,} tokens" + (f"  ·  last reply {last:,}" if last else ""))
 
     def _autostart(self):
         self.core.submit(self.core.startup_engine())

@@ -3,6 +3,7 @@ import asyncio
 import io
 import random
 import re
+import time
 from typing import Optional
 
 import aiohttp
@@ -53,7 +54,13 @@ COMMAND_HINTS = [
     ("stay_silent", "staying silent", None),
 ]
 
-TYPED_CMD_RE =re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|join|leave)\b[ \t]*([^\n]*)", re.I)
+TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|context|join|leave)\b[ \t]*([^\n]*)",
+                          re.I)
+
+
+def meter_bar(used, size, width=16):
+    filled = min(width, round(width * used / max(size, 1)))
+    return "█" * filled + "░" * (width - filled)
 
 
 class TypedInteraction:
@@ -130,6 +137,7 @@ class CharacterBot(discord.Client):
         self.recent = {}                        # channel id -> list of recent Entry (turn-taking)
         self.names = {}                         # user id -> display name
         self.voice = {}                         # guild id -> voice.VoiceSession
+        self.context_used = {}                  # char lower -> (tokens of its last reply's biggest call, time)
         self.on_change = lambda: None
         self._register_commands()
 
@@ -264,6 +272,11 @@ class CharacterBot(discord.Client):
         async def who(interaction: discord.Interaction):
             await self.cmd_who(interaction)
 
+        @self.tree.command(name="context", description="Show how full each character's context is")
+        @app_commands.guild_only()
+        async def context(interaction: discord.Interaction):
+            await self.cmd_context(interaction)
+
         @self.tree.command(name="join", description="Bring a character into your voice channel")
         @app_commands.guild_only()
         @app_commands.describe(character="Character to talk to (needs a voice; leave empty to pick from a list)")
@@ -351,6 +364,7 @@ class CharacterBot(discord.Client):
         handlers = {"summon": lambda: self.cmd_summon(it, arg), "dismiss": lambda: self.cmd_dismiss(it, arg),
                     "gohome": lambda: self.cmd_gohome(it), "forget": lambda: self.cmd_forget(it),
                     "characters": lambda: self.cmd_characters(it), "who": lambda: self.cmd_who(it),
+                    "context": lambda: self.cmd_context(it),
                     "join": lambda: self.cmd_join(it, arg),
                     "leave": lambda: self.cmd_leave(it)}
         await handlers[cmd]()
@@ -823,6 +837,50 @@ class CharacterBot(discord.Client):
         return tool_list(self.tool_on, exclude=("add_reaction", "view_profile_picture", "draw_image", "post_gif")
                          if voice else ())
 
+    # ---- context meter -------------------------------------------------------
+    def note_usage(self, char_name):
+        """Remember the real size (from llama-server) of the character's biggest call this turn."""
+        if self.core.llm.peak_tokens:
+            self.context_used[char_name.lower()] = (self.core.llm.peak_tokens, time.time())
+
+    def context_estimate(self, channel, char):
+        """Tokens the character's next prompt would take right now (estimate, nothing is trimmed)."""
+        b, lc = self.behavior, self.cfg["llm"]
+        tools = self.tools_for()
+        system = self._system_prompt(channel, char, tools=tools)
+        budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256 - tools_tokens(tools)
+        msgs = self.core.memory.build_messages(char.name, system, channel.id, budget, int(b["image_token_cost"]),
+                                               int(b["max_images_in_context"]), dry_run=True)
+        return self.core.memory.count_tokens(msgs, int(b["image_token_cost"])) + tools_tokens(tools)
+
+    def context_report(self, channel_id=None):
+        """[(character, channel name, next prompt estimate, last real usage or None, context size)]."""
+        size = int(self.cfg["llm"]["ctx_size"])
+        out = []
+        for cid, chars in list(self.state["summoned"].items()):
+            if channel_id is not None and str(cid) != str(channel_id):
+                continue
+            ch = self.get_channel(int(cid))
+            for info in list(chars.values()):
+                char = self.core.characters.get(info["name"])
+                if not ch or not char:
+                    continue
+                last = self.context_used.get(char.name.lower())
+                out.append((char.name, ch.name, self.context_estimate(ch, char), last[0] if last else None, size))
+        return out
+
+    async def cmd_context(self, interaction):
+        rows = self.context_report(interaction.channel_id)
+        if not rows:
+            return await interaction.response.send_message("No characters are here.", ephemeral=True)
+        lines = [f"**Context** (model limit {rows[0][4]:,} tokens, {int(self.cfg['llm']['max_tokens']):,} "
+                 "of it kept free for the reply):"]
+        for name, _ch, est, last, size in rows:
+            lines.append(f"**{name}** `{meter_bar(est, size)}` ≈{est:,} / {size:,} ({est * 100 // size}%)"
+                         + (f" · last reply used {last:,}" if last else ""))
+        lines.append("-# Older messages are dropped automatically when it's full; notes are kept.")
+        await interaction.response.send_message("\n".join(lines)[:1990])
+
     def _system_prompt(self, channel, char, present=None, tools=None):
         tools = self.tools_for() if tools is None else tools
         names = {t["function"]["name"] for t in tools}
@@ -869,6 +927,7 @@ class CharacterBot(discord.Client):
 
         typing = asyncio.create_task(self._typing(channel)) if b.get("typing_indicator") else None
         review, finalize = self._link_checker(char, tools) if b.get("check_links", True) else (None, None)
+        llm.peak_tokens = 0
         try:
             res = await run_turn(llm, msgs, tools, char.name,
                                  on_react=lambda a: self._react(channel, char.name, a),
@@ -880,6 +939,7 @@ class CharacterBot(discord.Client):
         finally:
             if typing:
                 typing.cancel()
+            self.note_usage(char.name)
 
         self._remember_actions(char, channel.id, channel.name, res)
         if res.silent:

@@ -21,6 +21,7 @@ class LlamaServer:
         self.proc = None
         self.state = self.STOPPED
         self.suspended_by = None   # game process name while suspended
+        self.peak_tokens = 0       # biggest prompt+reply (tokens) since the caller last reset it
         self._lock = asyncio.Lock()
         self._session = None
         self.on_state = lambda s: None
@@ -198,4 +199,7 @@ class LlamaServer:
                     c["use_native_tools"] = False
                     return await self.chat(messages, tools)
                 raise RuntimeError(f"llama-server error {r.status}: {err}")
+        u = data.get("usage") or {}
+        used = int(u.get("prompt_tokens") or 0) + int(u.get("completion_tokens") or 0)
+        self.peak_tokens = max(self.peak_tokens, used)
         return data["choices"][0]["message"]

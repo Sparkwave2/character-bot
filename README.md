@@ -58,6 +58,7 @@ You can create and edit characters in the **Characters** page, which copies the 
 - `/gohome`: dismisses every character in the channel (same as `/dismiss all`).
 - `/forget`: wipes the chat memory of every character in the channel. Their notes are kept.
 - `/who`: shows which characters are in the channel (and who is in voice chat), visible to everyone.
+- `/context`: shows how full each character's context is in this channel. You get a bar and the estimated size of its next prompt out of the model's limit, plus the real size of its last reply, as reported by llama-server. The **Dashboard** has the same meter for every summoned character, updated every few seconds.
 - `/characters`: lists who is in the channel and who is available, with their descriptions. 🔊 marks characters that can join voice chat.
 - `/summon` or `/join` without a character opens a dropdown that shows each character's description. Only the person who asked can use it. While you type a name, the autocomplete list shows names only, since Discord's autocomplete has no room for descriptions.
 - `/join <character>`: the character joins the voice channel you're in and talks with everyone there. Only one character can be in voice per server; joining another one replaces it.
