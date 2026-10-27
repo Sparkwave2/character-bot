@@ -15,6 +15,7 @@ from .cropper import CropDialog, load_image
 from .draw import SDXL_MIN_BYTES, list_checkpoints
 from .engine import resolve_backend
 from .games import running_process_names
+from .llm import VERBOSE_LOG
 from .log import log, log_queue
 from .tools import TOOL_LABELS, TOOL_NAMES
 from .tts import KOKORO_VOICES, VOICE_KINDS, kokoro_label
@@ -281,11 +282,23 @@ class App(ctk.CTk):
         c = self.card(s, 6, "Advanced")
         self.model_fields.append(Field(c, self.cfg, "llm", "server_path", "Custom llama-server", "file",
                                        "Optional. Leave empty to use the built-in engine", exe, row=1))
-        ctk.CTkLabel(c, text="").grid(row=3, column=0, pady=2)
+        self.model_fields.append(Field(c, self.cfg, "llm", "verbose_log", "Verbose model log", "bool",
+                                       "Writes every prompt, word for word, and every reply to "
+                                       "logs/llm-verbose.log", row=3))
+        self.button(c, "Open log", self._open_verbose_log, primary=False, width=100).grid(
+            row=3, column=2, padx=(0, 16), pady=(10, 0))
+        ctk.CTkLabel(c, text="").grid(row=5, column=0, pady=2)
         bar = ctk.CTkFrame(s, fg_color=BG)
         bar.grid(row=7, column=0, sticky="w", padx=32, pady=20)
         self.button(bar, "Save", lambda: self.save_fields(self.model_fields), width=110).pack(side="left", padx=(0, 8))
         self.button(bar, "Save & reload model", self._reload_model, primary=False, width=170).pack(side="left")
+
+    def _open_verbose_log(self):
+        if not os.path.isfile(VERBOSE_LOG):
+            messagebox.showinfo("Verbose model log", "Nothing is logged yet. Turn on Verbose model log, Save, "
+                                                     "and let a character reply.")
+            return
+        os.startfile(VERBOSE_LOG)
 
     BACKEND_LABELS = {"auto": "Auto (recommended)", "cuda": "CUDA (NVIDIA)", "vulkan": "Vulkan (any GPU)",
                       "cpu": "CPU only", "rocm": "ROCm (AMD)"}

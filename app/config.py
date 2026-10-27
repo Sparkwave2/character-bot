@@ -33,6 +33,7 @@ DEFAULTS = {
         "repeat_penalty": 1.05,
         "max_tokens": 400,
         "use_native_tools": True,   # send OpenAI-style tools (needs --jinja)
+        "verbose_log": False,       # write every prompt (word for word) and reply to logs/llm-verbose.log
     },
     "discord": {
         "token": "",

@@ -127,6 +127,7 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 | File | Purpose |
 |---|---|
 | `config.json` | All settings (written by the GUI) |
+| `logs/llm-verbose.log` | With **Model → Advanced → Verbose model log** on: every prompt exactly as the model reads it (llama-server renders the chat template, including the command definitions), followed by its raw reply and tool calls. Images appear as the template's image markers. Over 50 MB it moves to `llm-verbose.old.log`. **Open log** opens it |
 | `state.json` | Which characters are summoned where, and their webhooks |
 | `memory.json` | Character memories (text only) |
 | `notes/` | Each character's notes |

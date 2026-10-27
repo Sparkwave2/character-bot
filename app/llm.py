@@ -1,15 +1,64 @@
 """Runs llama.cpp's llama-server as a child process and talks to its
 OpenAI-compatible API. Unloading = stopping the process (frees all VRAM)."""
 import asyncio
+import datetime
+import json
 import os
 import shlex
 import subprocess
 import sys
+import threading
 
 import aiohttp
 
 from . import winjob
+from .config import ROOT
 from .log import log
+
+VERBOSE_LOG = os.path.join(ROOT, "logs", "llm-verbose.log")
+VERBOSE_MAX_BYTES = 50_000_000     # then it moves to llm-verbose.old.log and starts over
+_verbose_lock = threading.Lock()
+_verbose_n = 0
+
+
+def _without_image_data(obj):
+    """Base64 images would bury the text; keep a placeholder with their size."""
+    if isinstance(obj, dict):
+        return {k: (f"[image, {len(v)} characters of base64]" if k == "url" and str(v).startswith("data:")
+                    else _without_image_data(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_without_image_data(v) for v in obj]
+    return obj
+
+
+def write_verbose(prompt, data, status):
+    """Appends one request: the full prompt, then exactly what the model answered."""
+    global _verbose_n
+    msg = ((data.get("choices") or [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
+    usage = data.get("usage") or {} if isinstance(data, dict) else {}
+    with _verbose_lock:
+        _verbose_n += 1
+        parts = [f"{'=' * 30} {datetime.datetime.now():%Y-%m-%d %H:%M:%S}  call {_verbose_n} {'=' * 30}",
+                 "----- prompt (word for word, as the model reads it) -----", prompt,
+                 f"----- reply (HTTP {status}, {usage.get('prompt_tokens', '?')} prompt tokens, "
+                 f"{usage.get('completion_tokens', '?')} written) -----"]
+        if status != 200:
+            parts.append(json.dumps(data, ensure_ascii=False, indent=1))
+        if msg.get("reasoning_content"):
+            parts += ["[reasoning]", msg["reasoning_content"]]
+        if msg.get("content"):
+            parts.append(msg["content"] if isinstance(msg["content"], str) else json.dumps(msg["content"]))
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            parts.append(f"[tool call] {fn.get('name')}({fn.get('arguments')})")
+        try:
+            os.makedirs(os.path.dirname(VERBOSE_LOG), exist_ok=True)
+            if os.path.isfile(VERBOSE_LOG) and os.path.getsize(VERBOSE_LOG) > VERBOSE_MAX_BYTES:
+                os.replace(VERBOSE_LOG, VERBOSE_LOG.replace(".log", ".old.log"))
+            with open(VERBOSE_LOG, "a", encoding="utf-8") as f:
+                f.write("\n".join(parts) + "\n\n")
+        except OSError as e:
+            log(f"[llm] couldn't write the verbose log: {e}", level="warn")
 
 
 class LlamaServer:
@@ -171,6 +220,22 @@ class LlamaServer:
             await self._session.close()
 
     # ---- inference ----------------------------------------------------------
+    async def _rendered(self, session, body):
+        """The prompt exactly as the model reads it: llama-server applies the chat template for us.
+        Falls back to the JSON that was sent if the server can't do that."""
+        req = {k: body[k] for k in ("messages", "tools", "tool_choice") if k in body}
+        try:
+            async with session.post(self.base_url + "/apply-template", json=req,
+                                    timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status == 200:
+                    prompt = (await r.json(content_type=None)).get("prompt")
+                    if isinstance(prompt, str):
+                        return prompt
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            pass
+        return "(llama-server couldn't render the chat template; this is the JSON that was sent)\n" + \
+            json.dumps(_without_image_data(req), ensure_ascii=False, indent=1)
+
     async def chat(self, messages, tools=None, tool_choice="auto"):
         """Returns the raw `message` dict of the first choice. tool_choice="required" makes the
         model call at least one tool (llama-server enforces it with a grammar)."""
@@ -190,9 +255,12 @@ class LlamaServer:
             body["tools"] = tools
             body["tool_choice"] = tool_choice
         session = await self.session()
+        verbose = c.get("verbose_log") and await self._rendered(session, body)
         async with session.post(self.base_url + "/v1/chat/completions", json=body,
                                 timeout=aiohttp.ClientTimeout(total=600)) as r:
             data = await r.json(content_type=None)
+            if verbose:
+                await asyncio.to_thread(write_verbose, verbose, data, r.status)
             if r.status != 200:
                 err = data.get("error", data) if isinstance(data, dict) else data
                 # Some templates reject tools; retry once without them.
