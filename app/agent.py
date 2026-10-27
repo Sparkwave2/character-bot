@@ -29,6 +29,12 @@ CLAIMS = [
     ("get_current_time", {"get_current_time"}, re.compile(
         _ACT % r"checks? (?:the time|the clock|(?:his|her|their|my) (?:phone|watch))" +
         r"|\b(?:let me|lemme)\s+check\s+the\s+(?:time|clock|date)\b", re.I)),
+    ("draw_image", {"draw_image"}, re.compile(
+        _ACT % r"draws|sketches|doodles|paints|scribbles (?:a|an|something)" +
+        r"|\bhere'?s\s+(?:my|the|a)\s+(?:drawing|sketch|doodle|painting)\b"
+        r"|\b(?:let me|lemme|i'?ll|i'?m gonna|gonna)\s+(?:draw|sketch|doodle|paint)\b", re.I)),
+    ("post_gif", {"post_gif"}, re.compile(
+        _ACT % r"posts? (?:a )?gif|sends? (?:a )?gif" + r"|\[gif[^\]]*\]", re.I)),
     ("leave_channel", {"leave_channel"}, re.compile(
         _ACT % r"leaves|walks (?:out|away|off)|storms (?:off|out)|heads out|exits|disappears|vanishes", re.I)),
 ]
@@ -66,6 +72,8 @@ def describe_action(name, args):
         "web_search": lambda: f'searched the web for "{a("query")}"',
         "read_webpage": lambda: f"read the web page {a('url')}",
         "view_profile_picture": lambda: f"looked at {a('name')}'s profile picture",
+        "draw_image": lambda: f'drew a picture: "{a("prompt")}"',
+        "post_gif": lambda: f'posted a GIF ("{a("query")}")',
     }.get(name, lambda: None)()   # reactions and leaving are recorded as events already
 
 
@@ -120,7 +128,11 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
             elif name in handlers:
                 try:
                     out = handlers[name](args)
-                    results.append(await out if inspect.isawaitable(out) else out)
+                    out = await out if inspect.isawaitable(out) else out
+                    if isinstance(out, list):   # content parts with a picture (e.g. a drawing)
+                        images += out
+                        out = "The result is shown below."
+                    results.append(out)
                 except Exception as e:
                     results.append(f"{name} failed: {e}")
             else:

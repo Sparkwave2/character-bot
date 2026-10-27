@@ -47,10 +47,17 @@ class GameWatcher:
                 await llm.stop()
             elif self.core.want_loaded:
                 llm.suspended_by = found
+            draw = self.core.draw
+            draw.paused_by = found
+            if draw.proc:
+                await draw.stop()
+            elif self.core.cfg["tools"].get("draw_image"):
+                await draw.unload(await llm.session())
         elif not found and self.active_game:
             log(f"[games] {self.active_game} closed")
             self.active_game = None
             self.on_change(None)
+            self.core.draw.paused_by = None   # the WebUI restarts with the next drawing
             if llm.suspended_by:
                 llm.suspended_by = None
                 if self.core.want_loaded:

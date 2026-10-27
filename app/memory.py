@@ -8,6 +8,7 @@ context "scrolls" automatically.
 """
 import json
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -15,6 +16,8 @@ from collections import deque
 from .config import ROOT
 
 MEMORY_PATH = os.path.join(ROOT, "memory.json")
+GIF_LINK_RE = re.compile(r"https?://\S*klipy\S*", re.I)
+MEDIA_ONLY_RE = re.compile(r"[\s.]*(\[image\][\s.]*)*")
 
 
 def est_tokens(text):
@@ -177,6 +180,10 @@ class MemoryBank:
         msgs = [{"role": "system", "content": system_prompt}]
         for e, text, imgs in picked:
             if e.char_name and e.char_name.lower() == char_name.lower() and e.kind == "msg":
+                # its own drawings and GIFs are already recorded as events ("Mayo drew a picture"); a bare
+                # "..." or GIF link as its own message would only teach it to write those instead
+                if MEDIA_ONLY_RE.fullmatch(e.text or "") or GIF_LINK_RE.fullmatch(e.text.strip()):
+                    continue
                 msgs.append({"role": "assistant", "content": e.text or "..."})
                 continue
             if imgs:

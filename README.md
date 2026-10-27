@@ -18,6 +18,9 @@ A local AI character bot for Discord. A Qwen vision model (GGUF) runs through ll
    ```
 
    Without them it runs on the CPU, which is slower.
+5. **Drawing (optional).** On the **Drawing** page, set the folder of your AUTOMATIC1111 or Forge WebUI (the one containing `webui.bat`), then use **Pick…** to choose a model. Checkpoints of 5.5 GB or more are marked SDXL; that's a guess based on file size. Then turn on **Draw pictures** on the Behavior page. The first drawing starts the WebUI in the background (API only, no window, port 7861) and closes it when the app closes. A WebUI you start yourself with `--api` works too.
+   - **GPU memory.** Plain A1111 can't share the GPU well with llama-server, so the default launch option is `--medvram-sdxl`, and the model is unloaded after a few idle minutes. [Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge) is a fork of A1111 that manages GPU memory on its own, offloading parts of the model when VRAM is tight. It uses the same API and folder layout, so you can switch by pointing the folder setting at a Forge install. While a game from the Games page is running, drawing is paused and the WebUI is stopped.
+6. **GIFs (optional).** Get a free API key at [partner.klipy.com](https://partner.klipy.com) and put it under **Behavior → Commands**.
 
 ## Built-in engine (llama.cpp)
 
@@ -70,8 +73,12 @@ Characters can also act through MCP-style tool calls (OpenAI tool schemas, which
 | `stay_silent()` | Skip replying |
 | `view_profile_picture(name)` | Look at someone's avatar before replying (can be turned off under Behavior) |
 | `get_current_time()` | Check the local date and time |
-| `web_search(query)`, `read_webpage(url)` | Search DuckDuckGo and read a page as text (can be turned off under Behavior) |
+| `web_search(query)`, `read_webpage(url)` | Search DuckDuckGo and read a page as text |
 | `list_notes()`, `read_note(name)`, `write_note(name, content, append)`, `delete_note(name)` | The character's personal Markdown notebook in `notes/<character>/` |
+| `draw_image(prompt)` | Draw a picture with Stable Diffusion and post it; the character sees the result (off by default, see Drawing) |
+| `post_gif(query)` | Post the best-matching GIF from KLIPY (needs a KLIPY key) |
+
+Every command has its own switch under **Behavior → Commands**. The system prompt only mentions commands that are switched on. In voice chat, reactions, profile pictures, drawings and GIFs are left out.
 
 Small models often narrate a command instead of running it ("*reacts with 😂*", "I'll write that down", "let me look it up"). When a reply says that without the matching command, the character is told once that nothing happened and asked to use the command and rewrite its message; the log shows `[tools] … asking again`. Commands a character used (notes, searches, checking the time) are also kept in its own memory, so it sees in its history that it really uses them.
 
@@ -86,6 +93,7 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 - **Typing indicator.** Discord can't cancel a typing indicator early, and webhook replies don't clear it, so it fades on its own a few seconds after the reply. Turn it off under Behavior if that bothers you.
 - **Reactions** are recorded as events the characters can see, but a reaction never triggers a reply.
 - **Identity.** Characters only see people's display names, plus profile pictures if they ask through the tool. No other profile details are passed to the model.
+- **Voice messages.** Discord voice messages are transcribed with the same local Whisper model as voice chat, so characters see `[voice message] what was said`. This can be turned off under Behavior.
 - **Images.** Characters see uploaded images, stickers, embed images and pasted image links. Links without an image extension are fetched only if the server answers with an `image/*` content type.
 - **Voice chat.** Each speaker's audio is collected until they pause (*Pause that ends speech* on the Voice page). Whisper then transcribes it, the character answers, and ElevenLabs speaks the answer. What's said in voice goes into the character's memory, tagged `in #General (voice)`, so the character remembers it in text chat too. Emojis, links and `*actions*` are left out of the spoken reply. Discord's voice encryption (DAVE) is handled for both sending and receiving.
 - **Games.** Add process names (for example `eldenring.exe`) on the **Games** page. While any of them is running, llama-server is stopped, which frees the VRAM. It reloads automatically when the game closes. While the model is unloaded, characters stay quiet.
@@ -100,4 +108,4 @@ Small models often narrate a command instead of running it ("*reacts with 😂*"
 | `notes/` | Each character's notes |
 | `llama.cpp/` | Managed llama.cpp build and its `installed.json` manifest |
 | `models/whisper/` | Whisper speech-recognition model (unless you set another folder) |
-| `app/` | Source: `bot.py` (Discord), `voice.py` (voice chat), `stt.py` (Whisper), `tts.py` (ElevenLabs), `web.py` (search), `engine.py` (llama.cpp installer), `llm.py` (llama-server process), `memory.py` (context), `games.py`, `gui.py` |
+| `app/` | Source: `bot.py` (Discord), `voice.py` (voice chat), `stt.py` (Whisper), `tts.py` (ElevenLabs), `web.py` (search), `draw.py` (Stable Diffusion WebUI), `gifs.py` (KLIPY), `engine.py` (llama.cpp installer), `llm.py` (llama-server process), `memory.py` (context), `games.py`, `gui.py` |

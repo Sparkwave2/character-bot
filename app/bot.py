@@ -1,5 +1,6 @@
 """Discord side: slash commands, webhook characters, turn-taking."""
 import asyncio
+import io
 import random
 import re
 from typing import Optional
@@ -10,7 +11,9 @@ from discord import app_commands
 
 from .config import load_state, save_state
 from .log import log
-from .media import fetch_image, images_from_message
+from .draw import DrawError
+from .gifs import GifError, search_gif
+from .media import encode_image, fetch_image, images_from_message
 from .agent import describe_action, run_turn
 from .notes import Notebook, current_time
 from .tools import tool_list, tool_text_instructions
@@ -25,17 +28,32 @@ How the chat works:
 - Messages from a different channel than the current one are marked "in #channel". You remember them, but you are now speaking in #{channel}.
 - You only see people's display names{pfp}. You can see images people post.
 - Emoji reactions are shown as events. You never reply to a reaction itself, but you may react to messages yourself.
-- Normally you reply with a message, and you can use commands (reacting, notes, checking the time, {web}leaving, staying silent) alongside it. Use them freely whenever they fit, as a real person would: react to messages that deserve it, check the time instead of guessing it, {web_hint}and use leave_channel when you decide to leave or are told to go and agree. A command never replaces your reply.
-- Only a command makes something happen. Writing "*reacts with 😂*", "I'll write that down" or "let me look it up" without using the command does nothing, so never claim you did something you didn't use a command for.
-- You have a personal notebook of Markdown notes that lasts forever, even after old chat history is forgotten. Write down things worth remembering (names, facts people tell you about themselves, promises, plans) as soon as you learn them. {notes}
-- Write only {name}'s next message: no "[#N]" prefix, no name prefix, never speak for other people or characters.
+{commands}{notebook}- Write only {name}'s next message: no "[#N]" prefix, no name prefix, never speak for other people or characters.
 - Keep it natural and conversational for Discord; usually 1-3 short paragraphs at most.
 
 Current channel: #{channel} in the server "{guild}". Characters present here: {present}.
 {tool_text}"""
 
 
-TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|join|leave)\b[ \t]*([^\n]*)", re.I)
+COMMAND_LINES = """- Normally you reply with a message, and you can use commands ({kinds}) alongside it. Use them freely whenever they fit, as a real person would: {hints}. A command never replaces your reply.
+- Only a command makes something happen. Writing "*reacts with 😂*", "I'll write that down" or "let me look it up" without using the command does nothing, so never claim you did something you didn't use a command for.
+"""
+NOTEBOOK_LINE = """- You have a personal notebook of Markdown notes that lasts forever, even after old chat history is forgotten. {write}{notes}
+"""
+# (command, what it's called in the list, when to use it)
+COMMAND_HINTS = [
+    ("add_reaction", "reacting", "react to messages that deserve it"),
+    ("write_note", "notes", None), ("read_note", "notes", None), ("list_notes", "notes", None),
+    ("get_current_time", "checking the time", "check the time instead of guessing it"),
+    ("web_search", "searching the web",
+     "search the web for news, facts or anything you're unsure about instead of making it up"),
+    ("draw_image", "drawing", "draw a picture when someone asks for one or when showing beats telling"),
+    ("post_gif", "posting GIFs", "post a GIF now and then when it fits the mood"),
+    ("leave_channel", "leaving", "use leave_channel when you decide to leave or are told to go and agree"),
+    ("stay_silent", "staying silent", None),
+]
+
+TYPED_CMD_RE =re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|join|leave)\b[ \t]*([^\n]*)", re.I)
 
 
 class TypedInteraction:
@@ -707,19 +725,45 @@ class CharacterBot(discord.Client):
         return best
 
     # ---- generation ---------------------------------------------------------
-    def _system_prompt(self, channel, char, present=None):
-        allow_pfp = bool(self.behavior["allow_profile_pictures"])
-        allow_web = bool(self.behavior.get("web_search", True))
+    def tool_on(self, name):
+        """The command's switch on the Behavior page, plus what it needs to work."""
+        if not self.cfg["tools"].get(name, True):
+            return False
+        if name == "post_gif":
+            return bool(self.cfg["gifs"].get("klipy_key"))
+        if name == "draw_image":
+            return not self.core.draw.paused_by
+        return True
+
+    def tools_for(self, voice=False):
+        # in voice chat nothing can be shown, so reactions, pictures and GIFs are left out
+        return tool_list(self.tool_on, exclude=("add_reaction", "view_profile_picture", "draw_image", "post_gif")
+                         if voice else ())
+
+    def _system_prompt(self, channel, char, present=None, tools=None):
+        tools = self.tools_for() if tools is None else tools
+        names = {t["function"]["name"] for t in tools}
         native = self.cfg["llm"].get("use_native_tools", True)
+        kinds, hints = [], []
+        for cmd, kind, hint in COMMAND_HINTS:
+            if cmd in names:
+                if kind not in kinds:
+                    kinds.append(kind)
+                if hint:
+                    hints.append(hint)
+        commands = COMMAND_LINES.format(kinds=", ".join(kinds), hints=", ".join(hints) or "whenever useful") \
+            if names else ""
+        notebook = ""
+        if names & {"list_notes", "read_note", "write_note"}:
+            write = "Write down things worth remembering (names, facts people tell you about themselves, " \
+                    "promises, plans) as soon as you learn them. " if "write_note" in names else ""
+            notebook = NOTEBOOK_LINE.format(write=write, notes=Notebook(char.key).list())
         return SYSTEM_RULES.format(
             name=char.name, prompt=char.prompt.strip(), channel=channel.name, guild=channel.guild.name,
             present=", ".join(present or [i["name"] for i in self.present(channel.id).values()]),
-            web="searching the web, " if allow_web else "",
-            web_hint="search the web for news, facts or anything you're unsure about instead of making it up, "
-                     if allow_web else "",
-            pfp=" (and profile pictures, if you ask to view one)" if allow_pfp else "",
-            notes=Notebook(char.key).list(),
-            tool_text="" if native else "\n" + tool_text_instructions(allow_pfp, allow_web))
+            commands=commands, notebook=notebook,
+            pfp=" (and profile pictures, if you ask to view one)" if "view_profile_picture" in names else "",
+            tool_text="" if native or not tools else "\n" + tool_text_instructions(tools))
 
     async def respond(self, channel, speaker):
         info = self.present(channel.id).get(speaker.lower())
@@ -733,10 +777,10 @@ class CharacterBot(discord.Client):
             return
         b, lc = self.behavior, self.cfg["llm"]
         budget = int(lc["ctx_size"]) - int(lc["max_tokens"]) - 256
-        system = self._system_prompt(channel, char)
+        tools = self.tools_for()
+        system = self._system_prompt(channel, char, tools=tools)
         msgs = self.core.memory.build_messages(char.name, system, channel.id, budget,
                                                int(b["image_token_cost"]), int(b["max_images_in_context"]))
-        tools = tool_list(bool(b["allow_profile_pictures"]), bool(b.get("web_search", True)))
         log(f"[discord] {char.name} is thinking in #{channel.name} ({len(msgs) - 1} context entries)")
 
         typing = asyncio.create_task(self._typing(channel)) if b.get("typing_indicator") else None
@@ -744,7 +788,7 @@ class CharacterBot(discord.Client):
             res = await run_turn(llm, msgs, tools, char.name,
                                  on_react=lambda a: self._react(channel, char.name, a),
                                  on_pfp=lambda name: self._profile_picture(channel, name),
-                                 handlers=self._local_tools(char))
+                                 handlers=self._local_tools(char, channel, info))
         finally:
             if typing:
                 typing.cancel()
@@ -760,19 +804,22 @@ class CharacterBot(discord.Client):
         if self.core.memory.dirty:
             self.core.memory.save()
 
-    async def _send(self, channel, info, char, text):
+    async def _send(self, channel, info, char, text="", file=None):
         wh = discord.Webhook.from_url(info["webhook_url"], client=self)
-        chunks = [text[i:i + 1990] for i in range(0, len(text), 1990)]
+        chunks = [text[i:i + 1990] for i in range(0, len(text), 1990)] or [""]
         mentions = discord.AllowedMentions(everyone=False, roles=False, users=True)
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
+            extra = {"file": file} if file and i == len(chunks) - 1 else {}
             try:
-                await wh.send(chunk, username=char.name, allowed_mentions=mentions, wait=True)
+                await wh.send(chunk, username=char.name, allowed_mentions=mentions, wait=True, **extra)
             except discord.NotFound:  # webhook was deleted by someone; recreate it
                 new = await self._create_webhook(channel, char)
                 info.update(webhook_id=new.id, webhook_url=new.url)
                 self._save()
                 wh = new
-                await wh.send(chunk, username=char.name, allowed_mentions=mentions, wait=True)
+                if file:
+                    file.reset()
+                await wh.send(chunk, username=char.name, allowed_mentions=mentions, wait=True, **extra)
 
     @staticmethod
     async def announce(channel, text):
@@ -806,8 +853,40 @@ class CharacterBot(discord.Client):
         except (discord.HTTPException, asyncio.CancelledError):
             pass
 
-    def _local_tools(self, char):
+    def _local_tools(self, char, channel=None, info=None):
+        """`channel`/`info` (the webhook) are needed for commands that post something."""
         nb = Notebook(char.key)
+        drawn = []
+
+        async def draw(args):
+            prompt = str(args.get("prompt") or "").strip()
+            if not prompt:
+                return "Say what to draw."
+            if drawn:
+                return "You already drew a picture this turn."
+            drawn.append(prompt)
+            log(f"[draw] {char.name} is drawing: {prompt[:100]}")
+            try:
+                png = await self.core.draw.draw(self.http_session, prompt)
+            except DrawError as e:
+                log(f"[draw] {char.name} couldn't draw: {e}", level="warn")
+                return f"Drawing failed: {e}. Tell them you couldn't draw it right now."
+            await self._send(channel, info, char, file=discord.File(io.BytesIO(png), "drawing.png"))
+            seen = encode_image(png, int(self.behavior["max_image_side"]))
+            note = "[system] Your drawing was posted in the chat. This is what it looks like:"
+            return [{"type": "text", "text": note}, {"type": "image_url", "image_url": {"url": seen}}] \
+                if seen else "Your drawing was posted in the chat."
+
+        async def gif(args):
+            q = str(args.get("query") or "").strip()
+            try:
+                url, title = await search_gif(self.http_session, self.cfg["gifs"].get("klipy_key"), q)
+            except GifError as e:
+                log(f"[gifs] {char.name} couldn't post a GIF: {e}", level="warn")
+                return f"No GIF posted: {e}."
+            log(f"[gifs] {char.name} posted a GIF for {q!r}")
+            await self._send(channel, info, char, url)
+            return f'Posted a GIF ("{title}").'
 
         def logged(fn, what):
             def run(args):
@@ -825,7 +904,8 @@ class CharacterBot(discord.Client):
 
         return {"get_current_time": current_time, "list_notes": nb.list, "read_note": nb.read,
                 "write_note": logged(nb.write, "wrote"), "delete_note": logged(nb.delete, "deleted"),
-                "web_search": search, "read_webpage": read_page}
+                "web_search": search, "read_webpage": read_page,
+                **({"draw_image": draw, "post_gif": gif} if channel and info else {})}
 
     async def _react(self, channel, char_name, args):
         """Returns a result line for the tool loop."""

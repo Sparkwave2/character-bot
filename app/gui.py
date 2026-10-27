@@ -11,9 +11,11 @@ from PIL import Image, ImageDraw
 from .characters import Character, slug
 from .config import CHARACTERS_DIR
 from .cropper import CropDialog, load_image
+from .draw import SDXL_MIN_BYTES, list_checkpoints
 from .engine import resolve_backend
 from .games import running_process_names
 from .log import log, log_queue
+from .tools import TOOL_LABELS, TOOL_NAMES
 from .tts import VOICE_KINDS
 
 ACCENT = "#7c5cff"
@@ -66,14 +68,15 @@ class Field:
         self.var = tk.StringVar(value=str(val))
         w = ctk.CTkEntry(parent, textvariable=self.var, height=34, border_color=BORDER,
                          fg_color=CARD, show="•" if kind == "secret" else "")
-        w.grid(row=row, column=1, sticky="ew", pady=(10, 0), padx=(0, 8 if kind == "file" else 16))
-        if kind == "file":
+        w.grid(row=row, column=1, sticky="ew", pady=(10, 0), padx=(0, 8 if kind in ("file", "dir") else 16))
+        if kind in ("file", "dir"):
             ctk.CTkButton(parent, text="Browse", width=80, height=34, fg_color=CARD, hover_color=BORDER,
                           border_width=1, border_color=BORDER,
                           command=lambda: self._browse(filetypes)).grid(row=row, column=2, pady=(10, 0), padx=(0, 16))
 
     def _browse(self, filetypes):
-        p = filedialog.askopenfilename(filetypes=filetypes or [("All files", "*.*")])
+        p = filedialog.askdirectory() if self.kind == "dir" else \
+            filedialog.askopenfilename(filetypes=filetypes or [("All files", "*.*")])
         if p:
             self.var.set(os.path.normpath(p))
 
@@ -120,7 +123,8 @@ class App(ctk.CTk):
         self.pages = {}
         for name, builder in [("Dashboard", self.page_dashboard), ("Model", self.page_model),
                               ("Discord", self.page_discord), ("Characters", self.page_characters),
-                              ("Voice", self.page_voice), ("Games", self.page_games),
+                              ("Voice", self.page_voice), ("Drawing", self.page_drawing),
+                              ("Games", self.page_games),
                               ("Behavior", self.page_behavior),
                               ("Logs", self.page_logs)]:
             frame = ctk.CTkFrame(self.content, fg_color=BG, corner_radius=0)
@@ -141,7 +145,7 @@ class App(ctk.CTk):
             anchor="w", padx=20, pady=(24, 28))
         self.nav = {}
         icons = {"Dashboard": "◉", "Model": "⚙", "Discord": "✉", "Characters": "☺",
-                 "Voice": "♪", "Games": "▶", "Behavior": "≡", "Logs": "☰"}
+                 "Voice": "♪", "Drawing": "✎", "Games": "▶", "Behavior": "≡", "Logs": "☰"}
         for name, icon in icons.items():
             b = ctk.CTkButton(bar, text=f"  {icon}   {name}", anchor="w", height=40, corner_radius=10,
                               fg_color="transparent", hover_color=CARD, text_color="#d6d9e4",
@@ -726,12 +730,16 @@ class App(ctk.CTk):
                  ("image_token_cost", "Tokens per image (estimate)", "int", "Used for context trimming"),
                  ("max_image_side", "Max image size (px)", "int", "Images are downscaled"),
                  ("fetch_image_links", "Read pasted image links", "bool", ""),
-                 ("allow_profile_pictures", "Characters can view profile pictures", "bool", "Only when they ask"),
                  ("voice_messages", "Characters hear voice messages", "bool", "Transcribed locally with Whisper")]
         self.behavior_fields += [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
-        c = self.card(s, 4, "Internet")
-        specs = [("web_search", "Characters can search the web", "bool", "DuckDuckGo search and reading pages")]
-        self.behavior_fields += [Field(c, self.cfg, "behavior", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
+        c = self.card(s, 4, "Commands characters can use")
+        for i, name in enumerate(TOOL_NAMES):
+            self.behavior_fields.append(Field(c, self.cfg, "tools", name, TOOL_LABELS[name][0], "bool",
+                                              f"{name}", row=1 + i * 2))
+        self.behavior_fields.append(Field(c, self.cfg, "gifs", "klipy_key", "KLIPY API key", "secret",
+                                          "Free at partner.klipy.com; needed for post_gif",
+                                          row=1 + len(TOOL_NAMES) * 2))
+        ctk.CTkLabel(c, text="").grid(row=3 + len(TOOL_NAMES) * 2, column=0, pady=4)
         self.button(s, "Save", lambda: self.save_fields(self.behavior_fields), width=110).grid(
             row=5, column=0, sticky="w", padx=32, pady=20)
 
@@ -753,6 +761,80 @@ class App(ctk.CTk):
         self.voice_fields += [Field(c, self.cfg, "voice", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
         self.button(s, "Save", lambda: self.save_fields(self.voice_fields), width=110).grid(
             row=4, column=0, sticky="w", padx=32, pady=20)
+
+    # ---- drawing ------------------------------------------------------------
+    def page_drawing(self, f):
+        s = self.scroll_page(f)
+        self.header(s, "Drawing", "Characters draw with Stable Diffusion (SDXL) through the A1111 or Forge WebUI")
+        c = self.card(s, 2, "WebUI")
+        specs = [("webui_dir", "WebUI folder", "dir", "The folder with webui.bat and launch.py"),
+                 ("url", "API address", "str", "The app starts the WebUI here (API only, no window)"),
+                 ("auto_start", "Start it when needed", "bool", "Off = only use a WebUI you started with --api"),
+                 ("launch_args", "Extra launch options", "str", "--medvram-sdxl keeps SDXL small on A1111"),
+                 ("unload_minutes", "Free GPU memory after (min)", "float", "Unloads the model when idle; 0 = never")]
+        self.draw_fields = [Field(c, self.cfg, "draw", k, l, t, h, row=1 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
+        c = self.card(s, 3, "Picture")
+        self.draw_model = tk.StringVar(value=self.cfg["draw"]["model"])
+        ctk.CTkLabel(c, text="Model", anchor="w", font=ctk.CTkFont(size=13)).grid(
+            row=1, column=0, sticky="w", padx=(16, 12), pady=(10, 0))
+        ctk.CTkLabel(c, text="A checkpoint in models/Stable-diffusion", anchor="w", text_color=MUTED,
+                     font=ctk.CTkFont(size=11)).grid(row=2, column=0, sticky="nw", padx=(16, 12))
+        ctk.CTkEntry(c, textvariable=self.draw_model, height=34, border_color=BORDER, fg_color=CARD).grid(
+            row=1, column=1, sticky="ew", pady=(10, 0), padx=(0, 8))
+        ctk.CTkButton(c, text="Pick…", width=80, height=34, fg_color=CARD, hover_color=BORDER, border_width=1,
+                      border_color=BORDER, command=self.pick_checkpoint).grid(row=1, column=2, pady=(10, 0), padx=(0, 16))
+        specs = [("prompt_prefix", "Prompt prefix", "str", "Added before every prompt, e.g. score_9, score_8_up, for Pony"),
+                 ("negative_prompt", "Negative prompt", "str", ""),
+                 ("width", "Width", "int", "SDXL works best around 1024×1024"),
+                 ("height", "Height", "int", ""),
+                 ("steps", "Steps", "int", ""),
+                 ("cfg_scale", "CFG scale", "float", ""),
+                 ("sampler", "Sampler", "str", "e.g. DPM++ 2M, Euler a"),
+                 ("scheduler", "Scheduler", "str", "e.g. Karras, Automatic")]
+        self.draw_fields += [Field(c, self.cfg, "draw", k, l, t, h, row=3 + i * 2) for i, (k, l, t, h) in enumerate(specs)]
+        ctk.CTkLabel(c, text="Turn on “Draw pictures” on the Behavior page to give characters the command.",
+                     text_color=MUTED).grid(row=3 + len(specs) * 2, column=0, columnspan=3, sticky="w", padx=16, pady=12)
+        row = ctk.CTkFrame(s, fg_color="transparent")
+        row.grid(row=4, column=0, sticky="w", padx=32, pady=20)
+        self.button(row, "Save", self.save_drawing, width=110).pack(side="left")
+        self.button(row, "Free GPU memory", lambda: self.core.submit(self._draw_unload()), primary=False,
+                    width=150).pack(side="left", padx=8)
+        self.button(row, "Stop WebUI", lambda: self.core.submit(self.core.draw.stop()), primary=False,
+                    width=120).pack(side="left")
+
+    def _draw_unload(self):
+        async def go():
+            await self.core.draw.unload(await self.core.llm.session())
+        return go()
+
+    def save_drawing(self):
+        self.cfg["draw"]["model"] = self.draw_model.get().strip()
+        self.save_fields(self.draw_fields)
+
+    def pick_checkpoint(self):
+        folder = self.draw_fields[0].var.get().strip()
+        models = list_checkpoints(folder)
+        if not models:
+            messagebox.showinfo("Drawing", "No checkpoints found. Set the WebUI folder first; models are read "
+                                           "from its models/Stable-diffusion folder.")
+            return
+        win = ctk.CTkToplevel(self, fg_color=BG)
+        win.title("Pick a model")
+        win.geometry("520x520")
+        win.transient(self)
+        win.after(100, win.grab_set)
+        lst = ctk.CTkScrollableFrame(win, fg_color=PANEL)
+        lst.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def choose(name):
+            self.draw_model.set(name)
+            win.destroy()
+        for name, size in models:
+            xl = size >= SDXL_MIN_BYTES
+            ctk.CTkButton(lst, text=f"{name}   ·   {size / 1e9:.1f} GB" + ("   ·   SDXL" if xl else ""), anchor="w",
+                          height=34, fg_color="transparent", hover_color=CARD,
+                          text_color="#e6e8ef" if xl else MUTED, command=lambda n=name: choose(n)).pack(
+                fill="x", padx=4, pady=1)
 
     # ---- logs ---------------------------------------------------------------
     def page_logs(self, f):

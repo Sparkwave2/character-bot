@@ -82,15 +82,48 @@ WEB_TOOLS = [
 ]
 
 
-def tool_list(allow_pfp, allow_web=False):
-    return TOOLS + ([PFP_TOOL] if allow_pfp else []) + (WEB_TOOLS if allow_web else [])
+DRAW_TOOL = {"type": "function", "function": {
+    "name": "draw_image",
+    "description": "Draw a picture and post it in the chat, e.g. when someone asks you to draw something or "
+                   "you want to show what something looks like. You will see the result. Takes a little while.",
+    "parameters": {"type": "object", "properties": {
+        "prompt": {"type": "string", "description": "What the picture shows, in English, as a detailed "
+                                                    "comma-separated description: subject, appearance, pose, "
+                                                    "setting, style, lighting"}},
+        "required": ["prompt"]}}}
 
 
-def tool_text_instructions(allow_pfp, allow_web=False):
+GIF_TOOL = {"type": "function", "function": {
+    "name": "post_gif",
+    "description": "Search for a GIF (KLIPY) and post the best match in the chat, e.g. a reaction GIF.",
+    "parameters": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "A few words, e.g. 'happy dance' or 'facepalm'"}},
+        "required": ["query"]}}}
+
+ALL_TOOLS = TOOLS + [PFP_TOOL] + WEB_TOOLS + [DRAW_TOOL, GIF_TOOL]
+TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
+# what each switch on the Behavior page says, and whether it is on by default
+TOOL_LABELS = {
+    "add_reaction": ("React with emojis", True), "leave_channel": ("Leave on their own", True),
+    "stay_silent": ("Stay silent", True), "get_current_time": ("Check the time", True),
+    "list_notes": ("List notes", True), "read_note": ("Read notes", True),
+    "write_note": ("Write notes", True), "delete_note": ("Delete notes", True),
+    "view_profile_picture": ("View profile pictures", True), "web_search": ("Search the web", True),
+    "read_webpage": ("Read web pages", True), "draw_image": ("Draw pictures (Drawing page)", False),
+    "post_gif": ("Post GIFs (needs a KLIPY key)", True),
+}
+
+
+def tool_list(enabled, exclude=()):
+    """`enabled(name) -> bool` decides which commands the character gets."""
+    return [t for t in ALL_TOOLS if enabled(t["function"]["name"]) and t["function"]["name"] not in exclude]
+
+
+def tool_text_instructions(tools):
     lines = ["You can run commands by writing a block like:",
              '<tool_call>{"name": "add_reaction", "arguments": {"message_ref": 12, "emoji": "😂"}}</tool_call>',
              "Available commands:"]
-    for t in tool_list(allow_pfp, allow_web):
+    for t in tools:
         f = t["function"]
         args = ", ".join(f["parameters"]["properties"].keys())
         lines.append(f"- {f['name']}({args}): {f['description']}")

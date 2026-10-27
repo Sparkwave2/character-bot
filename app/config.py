@@ -4,6 +4,8 @@ import os
 import threading
 from copy import deepcopy
 
+from .tools import TOOL_LABELS
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT, "config.json")
 STATE_PATH = os.path.join(ROOT, "state.json")
@@ -44,8 +46,6 @@ DEFAULTS = {
         "image_token_cost": 800,    # estimated tokens per image in context
         "max_images_in_context": 4, # older images become "[image]" placeholders
         "max_image_side": 896,      # images are downscaled to this
-        "allow_profile_pictures": True,
-        "web_search": True,         # characters can search DuckDuckGo and read web pages
         "fetch_image_links": True,
         "voice_messages": True,     # Discord voice messages are transcribed with Whisper
         "history_limit": 400,       # hard cap on stored messages per channel
@@ -60,6 +60,26 @@ DEFAULTS = {
         "stt_model_dir": "",        # empty = ./models/whisper
         "silence_seconds": 0.8,     # a pause this long ends what someone is saying
         "reply_delay": 0.6,         # extra wait before answering
+    },
+    "tools": {name: on for name, (_label, on) in TOOL_LABELS.items()},   # each command on/off
+    "gifs": {
+        "klipy_key": "",            # free key from partner.klipy.com
+    },
+    "draw": {
+        "webui_dir": "",            # A1111 or Forge folder (the one with webui.bat); empty = only connect
+        "url": "http://127.0.0.1:7861",
+        "auto_start": True,         # start the WebUI (API only, no window) the first time someone draws
+        "launch_args": "--medvram-sdxl",
+        "model": "",                # checkpoint file name, e.g. ponyDiffusionV6XL.safetensors
+        "prompt_prefix": "",        # added before every prompt, e.g. "score_9, score_8_up, " for Pony models
+        "negative_prompt": "lowres, bad anatomy, bad hands, worst quality, low quality, watermark, text",
+        "width": 1024,
+        "height": 1024,
+        "steps": 25,
+        "cfg_scale": 6.0,
+        "sampler": "DPM++ 2M",
+        "scheduler": "Karras",
+        "unload_minutes": 5,        # free the GPU memory after this long without drawing (0 = never)
     },
     "games": {
         "enabled": True,
@@ -90,7 +110,13 @@ class Config:
         if os.path.exists(self.path):
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
-                    self.data = _merge(DEFAULTS, json.load(f))
+                    saved = json.load(f)
+                self.data = _merge(DEFAULTS, saved)
+                if "tools" not in saved:   # older configs had two switches for these
+                    b = self.data["behavior"]
+                    self.data["tools"]["view_profile_picture"] = bool(b.get("allow_profile_pictures", True))
+                    self.data["tools"]["web_search"] = self.data["tools"]["read_webpage"] = \
+                        bool(b.get("web_search", True))
             except (OSError, json.JSONDecodeError):
                 self.data = deepcopy(DEFAULTS)
 

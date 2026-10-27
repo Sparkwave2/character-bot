@@ -8,6 +8,7 @@ import discord
 from .bot import CharacterBot
 from .characters import CharacterStore
 from .config import Config
+from .draw import ImageGen
 from .engine import Engine
 from .games import GameWatcher
 from .llm import LlamaServer
@@ -27,6 +28,7 @@ class Core:
         self.games = GameWatcher(self)
         self.stt = Transcriber(self.cfg)
         self.tts = ElevenLabs(self.cfg)
+        self.draw = ImageGen(self.cfg)
         self.bot = None
         self.bot_task = None
         self.want_loaded = False   # user intent; game watcher respects it
@@ -169,4 +171,5 @@ class Core:
             pass
         if self.bot and not self.bot.is_closed():
             await self.bot.close()
+        await self.draw.stop()
         await self.llm.close()
