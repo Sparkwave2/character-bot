@@ -276,9 +276,14 @@ class LocalChat(ChatLogic):
 
     async def post_gif(self, channel, info, char, url, title):
         """The window can't show a link as a GIF, so the GIF is downloaded and posted as a picture."""
+        data = b""
         try:
-            async with self.http_session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
-                data = await r.content.read(MAX_GIF + 1) if r.status == 200 else b""
+            async with self.http_session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
+                if r.status == 200:
+                    async for chunk in r.content.iter_chunked(1 << 16):   # read() alone stops at what has arrived
+                        data += chunk
+                        if len(data) > MAX_GIF:
+                            break
         except (aiohttp.ClientError, asyncio.TimeoutError):
             data = b""
         if not data or len(data) > MAX_GIF:
