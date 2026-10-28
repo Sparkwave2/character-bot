@@ -13,7 +13,8 @@ from .config import load_state, save_state
 from .log import log
 from .media import fetch_image, images_from_message
 
-TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|characters|who|context|join|leave)\b[ \t]*([^\n]*)",
+TYPED_CMD_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|transform|characters|who|context|join|leave)\b"
+                          r"[ \t]*([^\n]*)",
                           re.I)
 
 
@@ -217,6 +218,22 @@ class CharacterBot(ChatLogic, discord.Client):
         async def forget(interaction: discord.Interaction):
             await self.cmd_forget(interaction)
 
+        async def form_autocomplete(interaction, current):
+            char = store.get(getattr(interaction.namespace, "character", None) or "")
+            here = [store.get(i["name"]) for i in self.present(interaction.channel_id).values()]
+            chars = [char] if char else [c for c in here if c]
+            names = sorted({f.name for c in chars for f in store.forms_of(c)} - {c.name for c in chars})
+            return [app_commands.Choice(name=n, value=n) for n in names if current.lower() in n.lower()][:25]
+
+        @self.tree.command(name="transform", description="Transform a character here into one of its forms")
+        @app_commands.guild_only()
+        @app_commands.describe(character="Character to transform (can be left out if only one here has forms)",
+                               into="The form it becomes (can be left out if it has only one)")
+        @app_commands.autocomplete(character=present_autocomplete, into=form_autocomplete)
+        async def transform(interaction: discord.Interaction, character: Optional[str] = None,
+                            into: Optional[str] = None):
+            await self.cmd_transform(interaction, character or "", into or "")
+
         @self.tree.command(name="characters", description="List available and present characters")
         @app_commands.guild_only()
         async def characters(interaction: discord.Interaction):
@@ -328,6 +345,7 @@ class CharacterBot(ChatLogic, discord.Client):
                     "gohome": lambda: self.cmd_gohome(it), "forget": lambda: self.cmd_forget(it),
                     "characters": lambda: self.cmd_characters(it), "who": lambda: self.cmd_who(it),
                     "context": lambda: self.cmd_context(it),
+                    "transform": lambda: self.cmd_transform(it, *self.transform_args(arg)),
                     "join": lambda: self.cmd_join(it, arg),
                     "leave": lambda: self.cmd_leave(it)}
         await handlers[cmd]()
@@ -485,6 +503,15 @@ class CharacterBot(ChatLogic, discord.Client):
         here[new.name.lower()] = {"name": new.name, "webhook_id": wh.id, "webhook_url": wh.url}
         self._save()
         return True
+
+    async def cmd_transform(self, interaction, who, into):
+        char, into = self.transform_target(interaction.channel_id, "" if who.lower() == "all" else who, into)
+        if not char:
+            return await interaction.response.send_message(into, ephemeral=True)
+        await interaction.response.defer(thinking=True)   # renaming the webhook can take a moment
+        notice = await self.transform(interaction.channel, char, into, by=interaction.user.display_name,
+                                      announce=False)
+        await interaction.followup.send(notice or f"**{char.name}** couldn't transform.")
 
     async def cmd_dismiss(self, interaction, name):
         here = self.present(interaction.channel_id)

@@ -7,7 +7,7 @@ import random
 import re
 import time
 
-from .agent import describe_action, run_turn
+from .agent import describe_action, form_names, run_turn
 from .config import ROOT
 from .draw import DrawError
 from .gifs import GifError, search_gif
@@ -47,7 +47,7 @@ COMMAND_HINTS = [
     ("draw_image", "draw when asked"),
     ("post_gif", "post a GIF now and then"),
     ("create_file", "make a file when someone wants one"),
-    ("transform", "transform into another form when the moment calls for it"),
+    ("transform", "transform into {forms} whenever you change form, also when someone changes you"),
     ("leave_channel", "leave_channel when you're told to go and agree"),
 ]
 FILE_PROMPT = ("[system] Now write the file {name} ({about}). Your answer is saved as the file exactly as you "
@@ -344,7 +344,8 @@ class ChatLogic:
         tools = self.tools_for(char=char) if tools is None else tools
         names = {t["function"]["name"] for t in tools}
         native = self.cfg["llm"].get("use_native_tools", True)
-        hints = [h for cmd, h in COMMAND_HINTS if cmd in names]
+        forms = " or ".join(form_names(tools))   # named, so it knows which form changes it back
+        hints = [h.format(forms=forms) for cmd, h in COMMAND_HINTS if cmd in names]
         commands = COMMAND_LINES.format(hints=", ".join(hints) or "whenever useful") if names else ""
         notebook = ""
         if names & {"read_note", "write_note"}:
@@ -425,19 +426,64 @@ class ChatLogic:
         return next((c.name for c in self.core.characters.group_of(char)
                      if c.name.lower() != char.name.lower() and c.name.lower() in here), None)
 
-    async def transform(self, channel, char, into):
-        """`char` becomes its form `into` right where it is; the new form speaks next."""
+    async def transform(self, channel, char, into, by=None, announce=True):
+        """`char` becomes its form `into` right where it is; the new form speaks next.
+        `by` is the person who used /transform. Returns the notice, or None if it didn't happen."""
         new = self.core.characters.get(into)
         if not new or new.name.lower() in self.present(channel.id):
-            return
+            return None
         if not await self.swap_form(channel, char, new):
-            return
-        log(f"[{self.log_tag}] {char.name} transformed into {new.name} in #{channel.name}")
+            return None
+        log(f"[{self.log_tag}] {by + ' turned ' if by else ''}{char.name}{'' if by else ' transformed'} "
+            f"into {new.name} in #{channel.name}")
         ev = self.core.memory.new_entry(kind="event", channel_id=channel.id, channel_name=channel.name,
-                                        text=f"{char.name} transformed into {new.name}.")
+                                        text=f"{by} transformed {char.name} into {new.name}." if by else
+                                        f"{char.name} transformed into {new.name}.")
         self._witness(channel.id, ev)
-        await self.announce(channel, f"✨ **{char.name}** transformed into **{new.name}**.")
+        notice = f"✨ **{char.name}** transformed into **{new.name}**."
+        if announce:
+            await self.announce(channel, notice)
         self.schedule(channel, force=new.name)
+        return notice
+
+    def transform_target(self, channel_id, who="", into=""):
+        """Who /transform changes and into what: (character, form name), or (None, why not).
+        `who` is a character here or left out (the only one here with forms); `into` is one of its forms or
+        left out (its only form). `who` alone may also name the form, e.g. "/transform Mayo" changes
+        Mayo (Scorpion) back."""
+        store, here = self.core.characters, self.present(channel_id)
+        chars = [c for c in (store.get(i["name"]) for i in here.values()) if c and store.forms_of(c)]
+        if not here:
+            return None, "Nobody is here."
+        if who and who.lower() not in here:
+            c = store.get(who)
+            other = self.form_here(channel_id, c) if c else None
+            if not other or into:
+                return None, f"**{who}** isn't here."
+            who, into = other, c.name
+        if who:
+            chars = [c for c in chars if c.name.lower() == who.lower()]
+            if not chars:
+                return None, f"**{here[who.lower()]['name']}** has no other forms (Characters page → Forms)."
+        elif len(chars) != 1:
+            return None, ("Nobody here has other forms (Characters page → Forms)." if not chars else
+                          "Who? " + ", ".join(f"**{c.name}**" for c in chars) + " can transform.")
+        char = chars[0]
+        forms = [f.name for f in store.forms_of(char)]
+        if into:
+            form = next((f for f in forms if f.lower() == into.lower()), None)
+            if not form:
+                return None, f"**{char.name}** can only transform into " + ", ".join(f"**{f}**" for f in forms) + "."
+            return char, form
+        if len(forms) > 1:
+            return None, f"Into what? **{char.name}** can become " + ", ".join(f"**{f}**" for f in forms) + "."
+        return char, forms[0]
+
+    @staticmethod
+    def transform_args(arg):
+        """'/transform Mayo into Mayo (Scorpion)' -> ('Mayo', 'Mayo (Scorpion)'); 'Mayo' -> ('Mayo', '')."""
+        parts = re.split(r"\s+(?:into|->|>)\s+", arg.strip(), maxsplit=1, flags=re.I)
+        return parts[0].strip(), (parts[1].strip() if len(parts) > 1 else "")
 
     async def post_gif(self, channel, info, char, url, title):
         """Discord shows a .gif link as the GIF itself."""

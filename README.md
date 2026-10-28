@@ -72,7 +72,7 @@ Each entry shows how much VRAM it needs with your current context size and conte
 
 The **Chat** page is a channel inside the app (`#local-chat`), for talking to characters without Discord. Characters behave as they do on Discord, with the same prompt, memory (it shows up as `#local-chat` in their history), notebook and turn-taking. Characters can talk to each other there too.
 
-- **+ Summon** adds a character; ✕ next to a name dismisses it. **Send everyone home**, **Forget everything** and **Clear the chat** are next to them. Typing `/summon <name>`, `/dismiss <name|all>`, `/gohome`, `/forget`, `/who` or `/clear` works too. Clearing only empties the window; memories stay.
+- **+ Summon** adds a character; ✕ next to a name dismisses it. **Send everyone home**, **Forget everything** and **Clear the chat** are next to them. Typing `/summon <name>`, `/dismiss <name|all>`, `/gohome`, `/forget`, `/transform [character] [into <form>]`, `/who` or `/clear` works too. Clearing only empties the window; memories stay.
 - Messages use Discord markdown: `**bold**`, `*italic*`, `__underline__`, `~~strike~~`, `` `code` ``, code blocks, `> quotes`, `# headings`, `-# small text`, lists, `||spoilers||` (click to reveal) and links.
 - **+** attaches pictures or files. Ctrl+V pastes a picture, or files copied in Explorer. Pictures show as previews; click one for full size. Characters see the pictures, and they read small text files (up to 6,000 characters). Clicking a file opens it in a viewer with **Save as…** and **Open with…**.
 - Commands that need Discord are left out: reactions and profile pictures. Drawing, GIFs and `create_file` work, and their pictures and files appear in the chat. GIFs are downloaded and play in the window; the 12 newest keep moving and older ones stay still.
@@ -112,6 +112,7 @@ You can create and edit characters in the **Characters** page, which copies the 
 - `/dismiss <character|all>`: removes the character and deletes its webhook.
 - `/gohome`: dismisses every character in the channel (same as `/dismiss all`).
 - `/forget`: sends every character in the channel home (like `/gohome`), then wipes their chat memory. This way, their leave message isn't the first thing they remember afterwards. Their notes are kept.
+- `/transform [character] [into]`: turns a character in the channel into one of its linked forms, like its own `transform` command does. Leave out `character` if only one character here has forms, and leave out `into` if it has only one form. Typed, it's `/transform Mayo into Mayo (Scorpion)`. `/transform Mayo` also works while Mayo (Scorpion) is here, and changes her back. The character remembers who transformed it, and the new form speaks next.
 - `/who`: shows which characters are in the channel (and who is in voice chat), visible to everyone.
 - `/context`: shows how full each character's context is in this channel. You get a bar and the estimated size of its next prompt out of the model's limit, plus the real size of its last reply, as reported by llama-server. The **Dashboard** has the same meter for every summoned character, updated every few seconds.
 - `/characters`: lists who is in the channel and who is available, with their descriptions. 🔊 marks characters that can join voice chat.

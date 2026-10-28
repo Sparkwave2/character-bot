@@ -25,7 +25,7 @@ LOCAL_ID = 1                 # the channel id in the characters' memory (Discord
 MAX_MESSAGES = 500
 MAX_GIF = 15_000_000
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
-COMMAND_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|who|clear)\b[ \t]*([^\n]*)", re.I)
+COMMAND_RE = re.compile(r"^\s*/(summon|dismiss|gohome|forget|transform|who|clear)\b[ \t]*([^\n]*)", re.I)
 
 
 def is_image(path):
@@ -178,6 +178,13 @@ class LocalChat(ChatLogic):
             return await self.gohome()
         if cmd == "forget":
             return await self.forget()
+        if cmd == "transform":
+            char, into = self.transform_target(LOCAL_ID, *self.transform_args(arg))
+            if not char:
+                return self.notice(into)
+            if not await self.transform(self.channel, char, into, by=self.user_name):
+                self.notice(f"**{char.name}** couldn't transform.")
+            return
         if cmd == "clear":
             return self.clear()
         names = [i["name"] for i in self.members.values()]

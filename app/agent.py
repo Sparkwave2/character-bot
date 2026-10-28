@@ -47,7 +47,10 @@ CLAIMS = [
     ("post_gif", {"post_gif"}, re.compile(
         _ACT % r"posts? (?:a )?gif|sends? (?:a )?gif" + r"|\[gif[^\]]*\]", re.I)),
     ("transform", {"transform"}, re.compile(
-        _ACT % r"transforms?|shape-?shifts?|morphs?|changes? (?:into|form|back)|turns? into", re.I)),
+        _ACT % r"transforms?|shape-?shifts?|morphs?|changes? (?:into|form|back)|turns? (?:into|back)" +
+        # being changed back counts too: "finally, I can be myself again"
+        r"|\b(?:back to (?:normal|myself|my (?:old|true|normal|real|usual|original) (?:self|form|body))"
+        r"|(?:be|am|i'?m|feel like) myself again)\b", re.I)),
     ("leave_channel", {"leave_channel"}, re.compile(
         _ACT % r"leaves|walks (?:out|away|off)|storms (?:off|out)|heads out|exits|disappears|vanishes", re.I)),
 ]
@@ -101,7 +104,8 @@ EXAMPLES = [("add_reaction", "reacting to a message"), ("write_note", "writing d
             ("read_note", "checking your notes"), ("get_current_time", "checking the time"),
             ("web_search", "looking something up"), ("draw_image", "drawing what was asked for"),
             ("post_gif", "posting a GIF"), ("create_file", "making a file someone wants"),
-            ("transform", "transforming into another form"), ("leave_channel", "leaving when you're told to go")]
+            ("transform", "transforming into {forms} when you change form (or someone changes you)"),
+            ("leave_channel", "leaving when you're told to go")]
 _decide_broken = False
 
 
@@ -113,7 +117,8 @@ async def _decide(llm, msgs, tools, char_name):
     if _decide_broken:
         return None
     names = {t["function"]["name"] for t in tools}
-    examples = ", ".join(e for n, e in EXAMPLES if n in names) or "using a command"
+    forms = " or ".join(form_names(tools))
+    examples = ", ".join(e.format(forms=forms) for n, e in EXAMPLES if n in names) or "using a command"
     question = {"role": "user", "content": DECIDE.format(examples=examples)}
     try:
         reply = await llm.chat(msgs + [question], tools + [JUST_REPLY], tool_choice="required")
@@ -198,7 +203,7 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
                 results.append("You will leave the channel right after this. "
                                "Write your goodbye message now if you want to say one.")
             elif name == "transform":
-                forms = _forms(tools)
+                forms = form_names(tools)
                 into = next((f for f in forms if f.lower() == str(args.get("into", "")).strip().lower()), None)
                 if into:
                     res.transform = into
@@ -233,7 +238,7 @@ async def run_turn(llm, msgs, tools, char_name, on_react=None, on_pfp=None, hand
     return res
 
 
-def _forms(tools):
+def form_names(tools):
     """The form names the transform command offers (they're its argument's choices)."""
     for t in tools:
         if t["function"]["name"] == "transform":
